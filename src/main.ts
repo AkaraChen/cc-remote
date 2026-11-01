@@ -1,7 +1,5 @@
 #!/usr/bin/env bun
 import { BUILTIN_TOOL_NAMES, LEGACY_TOOL_NAME_ALIASES, query, type Options, type PermissionMode, type SDKMessage, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
-import { homedir } from "node:os";
-import { join } from "node:path";
 import pkg from "../package.json";
 import { parse, USAGE, type Args } from "./args";
 import { PREFIX, REMOVED, LOCAL, strip } from "./names";
@@ -9,6 +7,8 @@ import { canUseTool, denyHook, format, isLocal, parseRules } from "./permissions
 import { environment } from "./prompt";
 import { REMOTE_PATH, rsh, spawner } from "./ssh";
 import { killAll, server } from "./tools";
+import { abs, home } from "./tools/util";
+import { hasTerminal } from "./tty";
 
 /** verbatimPrompts, which keeps a prompt starting with "/" from being read as a command, needs this. */
 const MIN_CLAUDE = "2.1.248";
@@ -25,7 +25,7 @@ const older = (a: string, b: string) => {
 };
 
 async function host(flag?: string): Promise<string> {
-  const file = Bun.file(join(homedir(), ".config", "cc-remote", "host"));
+  const file = Bun.file(`${home}/.config/cc-remote/host`);
   const found = flag ?? process.env.CC_REMOTE_HOST ?? ((await file.exists()) ? (await file.text()).trim() : "");
   return found || fail("no host. Pass --host, set CC_REMOTE_HOST, or write the host to ~/.config/cc-remote/host");
 }
@@ -57,7 +57,7 @@ async function* streamPrompt(): AsyncIterable<SDKUserMessage> {
 async function options(args: Args, target: string, cwd: string): Promise<Options> {
   const allow = parseRules(args.allowedTools);
   const deny = parseRules(args.disallowedTools);
-  const env = await environment(cwd);
+  const env = await environment(cwd, args.addDirs.map(abs));
   const append = [env, args.appendSystemPrompt].filter(Boolean).join("\n\n");
 
   return {
@@ -71,10 +71,11 @@ async function options(args: Args, target: string, cwd: string): Promise<Options
     allowedTools: allow.filter((r) => !isLocal(r) && r.content !== undefined).map((r) => format(r)),
     disallowedTools: [
       ...REMOVED,
+      // Like claude -p: with nobody to answer, Claude shouldn't ask.
+      ...((await hasTerminal()) ? [] : ["AskUserQuestion"]),
       ...deny.filter((r) => !isLocal(r) || r.content === undefined).map((r) => format(r, isLocal(r) ? PREFIX : "")),
     ],
-    // bypassPermissions never consults canUseTool, and the SDK warns if one is passed.
-    canUseTool: args.permissionMode === "bypassPermissions" ? undefined : canUseTool(allow.filter((r) => isLocal(r) || r.content === undefined), args.permissionMode),
+    canUseTool: canUseTool(allow.filter((r) => isLocal(r) || r.content === undefined), args.permissionMode),
     hooks: denyHook(deny.filter((r) => isLocal(r) && r.content !== undefined)),
     permissionMode: args.permissionMode as PermissionMode | undefined,
     allowDangerouslySkipPermissions: args.permissionMode === "bypassPermissions",
@@ -140,6 +141,13 @@ async function main() {
   }
   process.exit(code);
 }
+
+// Under bypassPermissions the SDK warns that canUseTool goes unused. It doesn't: AskUserQuestion,
+// and the few actions no mode approves, still come to it.
+const emitWarning = process.emitWarning.bind(process);
+process.emitWarning = ((warning: string | Error, ...rest: [{ code?: string }?]) => {
+  if (rest[0]?.code !== "CLAUDE_SDK_CAN_USE_TOOL_SHADOWED") emitWarning(warning, ...(rest as []));
+}) as typeof process.emitWarning;
 
 process.on("exit", killAll);
 process.on("SIGINT", () => process.exit(130));

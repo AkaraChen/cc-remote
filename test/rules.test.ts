@@ -38,6 +38,15 @@ describe("rules", () => {
   });
 });
 
+describe("AskUserQuestion", () => {
+  test("is denied, not guessed, when there is no terminal", async () => {
+    const decide = canUseTool([], undefined);
+    const input = { questions: [{ question: "Color?", header: "Color", multiSelect: false, options: [{ label: "Red", description: "" }, { label: "Blue", description: "" }] }] };
+    const result = await decide("AskUserQuestion", input, {} as Parameters<typeof decide>[2]);
+    expect(result?.behavior).toBe("deny");
+  });
+});
+
 describe("ssh", () => {
   test("quotes words for a POSIX shell", () => {
     const word = `it's $HOME "x"`;

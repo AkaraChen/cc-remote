@@ -51,8 +51,9 @@ Without a terminal it denies the call, as `claude -p` does. Approve ahead of tim
 
 The Claude Agent SDK talks to `claude` over its stdin and stdout. cc-remote runs the SDK
 locally and starts `claude` through ssh, so that conversation crosses the network unchanged.
-Claude Code's own Read, Write, Edit, Bash, Glob and Grep are switched off and replaced with
-versions that run in this process, with the same names and inputs. claude calls them through
+Claude Code's own Read, Write, Edit, NotebookEdit, Bash, Glob and Grep are switched off and
+replaced with versions that run in this process, with the same names and inputs. When Claude
+asks a clarifying question, it appears on your terminal. claude calls them through
 the SDK's tool channel, the same way it calls any MCP tool. See `PLAN.md` for the design.
 
 ## Develop

@@ -23,6 +23,7 @@ claude -p options:
   --dangerously-skip-permissions   bypass all permission checks
   --allowedTools <tools...>        rules to allow, e.g. "Read,Edit,Bash(git *)"
   --disallowedTools <tools...>     rules to deny, e.g. "WebFetch,Bash(rm *)"
+  --add-dir <dirs...>              more local directories to tell Claude about
   --system-prompt <prompt>         replace the default system prompt
   --append-system-prompt <prompt>  append to the default system prompt
   --json-schema <schema>           JSON Schema for structured output
@@ -58,6 +59,7 @@ export function parse(argv: string[]) {
       "allowed-tools": strings,
       disallowedTools: strings,
       "disallowed-tools": strings,
+      "add-dir": strings,
       "system-prompt": string,
       "append-system-prompt": string,
       "json-schema": string,
@@ -95,6 +97,7 @@ export function parse(argv: string[]) {
     permissionMode: v["dangerously-skip-permissions"] ? "bypassPermissions" : v["permission-mode"],
     allowedTools: [...(v.allowedTools ?? []), ...(v["allowed-tools"] ?? [])],
     disallowedTools: [...(v.disallowedTools ?? []), ...(v["disallowed-tools"] ?? [])],
+    addDirs: (v["add-dir"] ?? []).flatMap((d) => d.split(",")).filter(Boolean),
     systemPrompt: v["system-prompt"],
     appendSystemPrompt: v["append-system-prompt"],
     jsonSchema: v["json-schema"],

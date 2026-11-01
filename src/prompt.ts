@@ -1,6 +1,8 @@
 import { $ } from "bun";
-import { homedir, platform, release } from "node:os";
 import { dirname, join } from "node:path";
+import { home } from "./tools/util";
+
+const run = (cmd: ReturnType<typeof $>, cwd: string) => cmd.cwd(cwd).quiet().nothrow().text().then((s) => s.trim());
 
 /** CLAUDE.md files claude would load for this directory: the user's, then every ancestor's, nearest last. */
 async function memory(cwd: string): Promise<string> {
@@ -10,7 +12,7 @@ async function memory(cwd: string): Promise<string> {
     if (d === dirname(d)) break;
   }
   const candidates = [
-    join(homedir(), ".claude", "CLAUDE.md"),
+    join(home, ".claude", "CLAUDE.md"),
     ...dirs.flatMap((d) => [join(d, "CLAUDE.md"), join(d, ".claude", "CLAUDE.md"), join(d, "CLAUDE.local.md")]),
   ];
   const found: string[] = [];
@@ -23,11 +25,10 @@ async function memory(cwd: string): Promise<string> {
 }
 
 async function git(cwd: string): Promise<string> {
-  const run = (cmd: ReturnType<typeof $>) => cmd.cwd(cwd).quiet().nothrow().text().then((s) => s.trim());
-  const branch = await run($`git rev-parse --abbrev-ref HEAD`);
+  const branch = await run($`git rev-parse --abbrev-ref HEAD`, cwd);
   if (!branch) return "";
-  const status = (await run($`git status --short`)).split("\n").slice(0, 40).join("\n");
-  const log = await run($`git log --oneline -5`);
+  const status = (await run($`git status --short`, cwd)).split("\n").slice(0, 40).join("\n");
+  const log = await run($`git log --oneline -5`, cwd);
   return `\n\n# gitStatus\nThis is the git status of the working directory at the start of the conversation.\nCurrent branch: ${branch}\n\nStatus:\n${status || "(clean)"}\n\nRecent commits:\n${log}`;
 }
 
@@ -36,13 +37,14 @@ async function git(cwd: string): Promise<string> {
  * machine-specific sections (its cwd, git status, memory paths) out of the system prompt; this
  * supplies the local ones in their place.
  */
-export async function environment(cwd: string): Promise<string> {
-  const [gitStatus, claudeMd] = await Promise.all([git(cwd), memory(cwd)]);
+export async function environment(cwd: string, addDirs: string[] = []): Promise<string> {
+  const [gitStatus, claudeMd, os] = await Promise.all([git(cwd), memory(cwd), run($`uname -sr`, cwd)]);
+  const extra = addDirs.length ? `\n - Additional working directories: ${addDirs.join(", ")}` : "";
   return `# Environment (cc-remote)
-This session runs through cc-remote. Your Read, Write, Edit, Bash, Glob and Grep tools execute on the user's machine, not on the machine hosting this session. Any other working directory you are told about belongs to the host; ignore it and use this one.
- - Working directory: ${cwd}
+This session runs through cc-remote. Your Read, Write, Edit, NotebookEdit, Bash, Glob and Grep tools execute on the user's machine, not on the machine hosting this session. Any other working directory you are told about belongs to the host; ignore it and use this one.
+ - Working directory: ${cwd}${extra}
  - Is a git repository: ${gitStatus ? "yes" : "no"}
- - Platform: ${platform()}
- - OS version: ${release()}
+ - Platform: ${process.platform}
+ - OS version: ${os}
  - Shell: bash${gitStatus}${claudeMd}`;
 }

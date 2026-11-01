@@ -53,7 +53,8 @@ cc-remote/
   src/ssh.ts              # spawnClaudeCodeProcess：ssh -T -o BatchMode=yes host -- '…'
   src/names.ts            # strip()/prefix()：mcp__cc__ 前缀只存在于 claude 和 SDK 之间
   src/tools/index.ts      # createSdkMcpServer({ name: "cc", tools, alwaysLoad: true })
-  src/tools/{read,write,edit,bash,glob,grep}.ts   # 每个文件 = schema + description + handler
+  src/tty.ts              # 经 /dev/tty 提问（Bun.file），无终端返回 null
+  src/tools/{read,write,edit,bash,glob,grep,notebook}.ts   # 每个文件 = schema + description + handler
   test/                   # 工具、规则、引号的单测；端到端用 ssh localhost 手测
 ```
 
@@ -63,10 +64,11 @@ cc-remote/
 
 | 工具 | 输入 | 实现 |
 |---|---|---|
-| Read | `file_path, offset?, limit?` | `cat -n` 风格行号；图片返回 image block（v1.1） |
+| Read | `file_path, offset?, limit?` | `cat -n` 风格行号；图片返回 image block；`.ipynb` 渲染为带 id 的 cell 和输出，输出里的图片也是 image block |
 | Write | `file_path, content` | 自动建目录 |
 | Edit | `file_path, old_string, new_string, replace_all?` | 精确替换，唯一性检查，错误文案与内置一致 |
-| Bash | `command, timeout?, description?, run_in_background?` | `bash -c`，cwd = 本机 cwd，默认 120s，stdout+stderr 合并，大输出截断；`run_in_background` v1 忽略 |
+| Bash | `command, timeout?, description?, run_in_background?` | `Bun.spawn` 独立进程组，cwd 跨调用保持，默认 120s 最长 10 分钟，stdout+stderr 合并，大输出截断；`run_in_background` 输出写到临时文件，返回 ID 和文件路径，会话结束时停止 |
+| NotebookEdit | `notebook_path, cell_id?, new_source, cell_type?, edit_mode?` | replace / insert / delete；cell id 用 notebook 自带的 `id`，没有则为 `cell-N`；替换代码 cell 时清空输出 |
 | Glob | `pattern, path?` | `Bun.Glob`，按 mtime 排序 |
 | Grep | `pattern, path?, glob?, output_mode?, -i/-n/-A/-B/-C, head_limit?, multiline?, type?` | 优先本机 `rg`，无则 `grep -r` |
 
@@ -77,7 +79,7 @@ cc-remote/
 | 工具 | 状态 |
 |---|---|
 | Read Write Edit Bash Glob Grep | v1 重写 |
-| NotebookEdit | v1.1 重写 |
+| NotebookEdit | 已重写 |
 | LSP Monitor EnterWorktree ExitWorktree PowerShell | 禁用 |
 
 **B. 留在服务端，零本机副作用 → 原样保留**
@@ -93,7 +95,10 @@ cc-remote/
 | 计划模式 | EnterPlanMode ExitPlanMode | 计划文件在服务器 `~/.claude`；ExitPlanMode 走 canUseTool |
 | 其他 | ReportFindings EndConversation | 输出型 |
 
-**C. 需要人回答 → 本机 TTY：** AskUserQuestion（v1.1；无 TTY 按 claude 规则拒绝）
+**C. 需要人回答 → 本机 TTY：** AskUserQuestion。claude 把它交给 `canUseTool`，我们在 `/dev/tty` 列出选项，
+答案按 `{问题原文: label}` 回传，多选用逗号拼接，也可直接输入文字。启动时没有终端就把它放进 `disallowedTools`，
+与 `claude -p` 无宿主时隐藏它一致。`bypassPermissions` 下也照常传 `canUseTool`，因为 AskUserQuestion 仍会来问；
+SDK 对此的 `CLAUDE_SDK_CAN_USE_TOOL_SHADOWED` 警告被精确过滤。
 
 **D. 绑定 claude.ai / 桌面 / 云，`-p` 下自动不出现：** Artifact ClaudeDesign DesignSync
 OfferChromeSetup Projects propose_skills ProposeGoal PushNotification ReadNotifications
@@ -168,7 +173,9 @@ SDK 给子进程加的环境变量（实测 `CLAUDE_CODE_SDK_READS_SESSION_STATE
 输出：`stream-json` 每条 SDK 消息 strip 后原样一行；`json` 打印 `result` 消息；`text` 打印 `result.result`。
 退出码：result 成功 0，否则 1。
 
-不支持（报错）：交互模式、`--mcp-config`、`--add-dir`（v1.1）、`--bg`、`--cloud`。
+`--add-dir`：本机目录，写进 append 的环境段落，不传给远端 claude（远端没有这些路径；本机工具本来就不限目录）。
+
+不支持（报错）：交互模式、`--mcp-config`、`--bg`、`--cloud`。
 
 ## 6. 实施步骤
 
@@ -177,4 +184,8 @@ SDK 给子进程加的环境变量（实测 `CLAUDE_CODE_SDK_READS_SESSION_STATE
 3. **参数与输出**（1 天）：`args.ts`、三种输出、stream-json 输入、resume/continue、退出码。
 4. **cwd / 系统提示 / 权限**（1 天）：镜像目录、append、本机 CLAUDE.md 注入、`canUseTool` TTY、规则匹配。
 5. **打包与体验**（半天）：三平台 compile、`doctor`、README（安装 = 下载一个文件 + 写一行 host）。
-6. **v1.1**：Read 图片、NotebookEdit、AskUserQuestion、`--add-dir`、后台 Bash。
+6. **补齐**：Read 图片与 notebook、NotebookEdit、AskUserQuestion、`--add-dir`、后台 Bash。均已完成并端到端验证。
+
+**Bun 优先。** 能用 Bun 全局 API 的地方不用 `node:` 模块：`Bun.file`（读写、stat、lastModified、/dev/tty）、
+`Bun.spawn`（Bash、Grep）、`Bun.$`（git、uname）、`Bun.Glob`、`Bun.env`、`Bun.which`。保留的 `node:` 导入只有 Bun 没有对应物的：
+`node:path`、`node:util` 的 `parseArgs`、`node:os` 的 `hostname`、ssh 模块的 `node:child_process`（SDK 要求 Node 风格的流）。

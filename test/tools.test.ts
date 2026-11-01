@@ -6,6 +6,7 @@ import { bash } from "../src/tools/bash";
 import { edit } from "../src/tools/edit";
 import { glob } from "../src/tools/glob";
 import { grep } from "../src/tools/grep";
+import { notebookEdit } from "../src/tools/notebook";
 import { read } from "../src/tools/read";
 import { write } from "../src/tools/write";
 
@@ -66,6 +67,14 @@ describe("Bash", () => {
     await call(bash, { command: `cd ${dir}` });
     expect((await call(bash, { command: "pwd -P" })).text).toBe(Bun.spawnSync(["realpath", dir]).stdout.toString().trim());
   });
+  test("runs commands in the background and writes their output to a file", async () => {
+    const { text } = await call(bash, { command: "echo bg-ok; sleep 30", run_in_background: true });
+    const file = text.match(/written to: (\S+)\./)![1]!;
+    await Bun.sleep(300);
+    expect(await Bun.file(file).text()).toBe("bg-ok\n");
+    const pid = Number(text.match(/ID: (\d+)/)![1]);
+    process.kill(-pid, "SIGKILL");
+  });
   test("times out and does not wait for background children", async () => {
     const started = Date.now();
     expect((await call(bash, { command: "sleep 30", timeout: 1000 })).text).toContain("timed out");
@@ -88,5 +97,39 @@ describe("Glob and Grep", () => {
     expect((await call(grep, { pattern: "needle", path, "-i": true, output_mode: "count" })).text.split("\n").sort()).toEqual([`${dir}/g/new.ts:1`, `${dir}/g/old.ts:1`]);
     expect((await call(grep, { pattern: "NEEDLE", path, output_mode: "content" })).text).toBe(`${dir}/g/new.ts:1:const NEEDLE = 2;`);
     expect((await call(grep, { pattern: "absent", path })).text).toBe("No files found");
+  });
+});
+
+describe("Notebooks", () => {
+  const file = join(dir, "nb.ipynb");
+  const nb = {
+    nbformat: 4, nbformat_minor: 5, metadata: {},
+    cells: [
+      { id: "intro", cell_type: "markdown", metadata: {}, source: ["# Title\n"] },
+      { id: "calc", cell_type: "code", metadata: {}, execution_count: 1, source: ["1 + 1"],
+        outputs: [{ output_type: "execute_result", data: { "text/plain": ["2"] }, metadata: {}, execution_count: 1 }] },
+    ],
+  };
+  test("Read shows cells with ids and outputs", async () => {
+    await Bun.write(file, JSON.stringify(nb));
+    const { text } = await call(read, { file_path: file });
+    expect(text).toContain('<cell id="intro" type="markdown">\n# Title\n');
+    expect(text).toContain('<cell id="calc" type="code">\n1 + 1\n</cell>\n<output>\n2\n</output>');
+  });
+  test("NotebookEdit replaces, inserts and deletes cells", async () => {
+    await Bun.write(file, JSON.stringify(nb));
+    await call(notebookEdit, { notebook_path: file, cell_id: "calc", new_source: "2 + 2" });
+    let cells = (await Bun.file(file).json()).cells;
+    expect(cells[1]).toMatchObject({ source: ["2 + 2"], outputs: [], execution_count: null });
+
+    const inserted = await call(notebookEdit, { notebook_path: file, cell_id: "intro", new_source: "x = 1\ny = 2", cell_type: "code", edit_mode: "insert" });
+    cells = (await Bun.file(file).json()).cells;
+    expect(cells.map((c: { cell_type: string }) => c.cell_type)).toEqual(["markdown", "code", "code"]);
+    expect(cells[1].source).toEqual(["x = 1\n", "y = 2"]);
+    expect(inserted.text).toContain(cells[1].id);
+
+    await call(notebookEdit, { notebook_path: file, cell_id: "intro", new_source: "", edit_mode: "delete" });
+    expect((await Bun.file(file).json()).cells).toHaveLength(2);
+    expect((await call(notebookEdit, { notebook_path: file, cell_id: "nope", new_source: "" })).error).toBe(true);
   });
 });

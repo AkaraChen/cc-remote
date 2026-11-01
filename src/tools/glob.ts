@@ -1,5 +1,4 @@
 import { tool } from "@anthropic-ai/claude-agent-sdk";
-import { stat } from "node:fs/promises";
 import { z } from "zod";
 import { abs, ok } from "./util";
 
@@ -26,8 +25,7 @@ export const glob = tool(
     }
     if (!files.length) return ok("No files found");
 
-    const dated = await Promise.all(files.map(async (f) => [f, (await stat(f).catch(() => null))?.mtimeMs ?? 0] as const));
-    dated.sort((a, b) => b[1] - a[1]);
+    const dated = files.map((f) => [f, Bun.file(f).lastModified] as const).sort((a, b) => b[1] - a[1]);
     const shown = dated.slice(0, LIMIT).map(([f]) => f).join("\n");
     return ok(files.length > LIMIT ? `${shown}\n(Results are truncated. Consider using a more specific path or pattern.)` : shown);
   },
