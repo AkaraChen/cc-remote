@@ -1,8 +1,11 @@
 import type { SpawnedProcess, SpawnOptions } from "@anthropic-ai/claude-agent-sdk";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import { closeSync, openSync } from "node:fs";
 import { hostname, userInfo } from "node:os";
 import { proxy } from "./proxy";
 import { localTranscript } from "./sessions";
+
+const WINDOWS = process.platform === "win32";
 
 /** Single-quotes a word for a POSIX shell. */
 export const quote = (s: string) => `'${s.replaceAll("'", `'\\''`)}'`;
@@ -17,11 +20,13 @@ const KEEPALIVE = ["-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3"
 /**
  * The ssh command, like rsync's RSYNC_RSH: `CC_REMOTE_SSH="ssh -p 2222"`, plus keepalives when
  * that command is ssh. By default sessions share one connection, since an ACP client may open
- * several at once and probe besides.
+ * several at once and probe besides. Windows' OpenSSH can't multiplex, so there each session has
+ * its own.
  */
 export const rsh = () => {
   const custom = Bun.env.CC_REMOTE_SSH?.split(/\s+/).filter(Boolean);
-  if (custom?.length) return custom[0]!.split("/").pop() === "ssh" ? [...custom, ...KEEPALIVE] : custom;
+  if (custom?.length) return /^ssh(\.exe)?$/i.test(custom[0]!.split(/[\\/]/).pop()!) ? [...custom, ...KEEPALIVE] : custom;
+  if (WINDOWS) return ["ssh", ...KEEPALIVE];
   const socket = `/tmp/cc-remote-${userInfo().uid}-%C`;
   return ["ssh", "-o", "ControlMaster=auto", "-o", `ControlPath=${socket}`, "-o", "ControlPersist=10m", ...KEEPALIVE];
 };
@@ -29,8 +34,11 @@ export const rsh = () => {
 /** Native installs of claude live in ~/.local/bin, which non-interactive ssh shells often leave off PATH. */
 export const REMOTE_PATH = `PATH="$HOME/.local/bin:$PATH"`;
 
+/** A local path as a POSIX path for the host: `C:\Users\me` becomes `/C/Users/me`. */
+const posix = (path: string) => path.replaceAll("\\", "/").replace(/^([A-Za-z]):/, "/$1");
+
 /** The host folder a local directory maps to, relative to the host's home. */
-export const hostDir = (cwd: string) => `.cc-remote/ws/${hostname()}${cwd}`;
+export const hostDir = (cwd: string) => `.cc-remote/ws/${hostname()}${posix(cwd)}`;
 
 /** Enters a stable per-directory folder on the host, so sessions and --continue have a home. */
 const enter = (cwd: string) => {
@@ -85,11 +93,17 @@ export function spawner(host: string, cwd: string, env: Record<string, string>) 
     // A session the host has never seen (a fork, or one a local claude wrote) goes up first.
     const resume = argument(options.args, "--resume");
     const transcript = resume && localTranscript(resume, cwd);
-    const command = transcript
+    // Windows has no sh to chain the two; there the upload finishes before claude starts.
+    if (transcript && WINDOWS) {
+      const fd = openSync(transcript, "r");
+      spawnSync(ssh!, [...flags, "-T", host, uploadCommand(resume, cwd)], { stdio: [fd, "ignore", "inherit"], windowsHide: true });
+      closeSync(fd);
+    }
+    const command = transcript && !WINDOWS
       ? ["sh", "-c", `${[ssh!, ...flags, "-T", host, uploadCommand(resume, cwd)].map(quote).join(" ")} <${quote(transcript)}; exec ${main.map(quote).join(" ")}`]
       : main;
 
-    const child = spawn(command[0]!, command.slice(1), { stdio: ["pipe", "pipe", "pipe"], signal: options.signal });
+    const child = spawn(command[0]!, command.slice(1), { stdio: ["pipe", "pipe", "pipe"], signal: options.signal, windowsHide: true });
     child.stderr!.on("data", (chunk) => process.stderr.write(chunk));
     return proxy(child, { cwd, hostDir: hostDir(cwd), mode: argument(options.args, "--permission-mode") ?? "default" });
   };

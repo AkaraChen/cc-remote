@@ -3,6 +3,7 @@ import { z } from "zod";
 import { abs, err, ok, type Workspace } from "./util";
 
 const rg = Bun.which("rg");
+const grepBin = Bun.which("grep");
 
 type Input = {
   pattern: string; path?: string; glob?: string; type?: string; output_mode?: "content" | "files_with_matches" | "count";
@@ -53,6 +54,7 @@ export const grep = (ws: Workspace) => tool(
     head_limit: z.number().optional().describe("Limit output to the first N lines/entries."),
   },
   async (input) => {
+    if (!rg && !grepBin) return err("Grep needs ripgrep (rg) or grep on PATH, and this machine has neither. Ask the user to install ripgrep.");
     const mode = input.output_mode ?? "files_with_matches";
     const proc = Bun.spawn(command(input, mode, abs(ws, input.path ?? ".")), { stdout: "pipe", stderr: "pipe", stdin: "ignore" });
     const [out, error, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);

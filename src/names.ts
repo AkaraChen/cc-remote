@@ -1,5 +1,8 @@
+/** The local shell tool: PowerShell on Windows, as Claude Code itself does there, else Bash. */
+export const SHELL = process.platform === "win32" ? "PowerShell" : "Bash";
+
 /** Tools we run locally, under the names Claude Code uses for its own versions. */
-export const LOCAL = ["Read", "Write", "Edit", "Bash", "Glob", "Grep", "NotebookEdit"];
+export const LOCAL = ["Read", "Write", "Edit", SHELL, "Glob", "Grep", "NotebookEdit"];
 
 /** Local tools that only read; Claude Code never asks before its own versions of these. */
 export const READS = ["Read", "Glob", "Grep"];
@@ -10,9 +13,9 @@ export const EDITS = ["Write", "Edit", "NotebookEdit"];
 /**
  * Built-in tools that would act on the host instead of this machine. LSP needs local language
  * servers, Monitor streams events claude can't receive from an MCP tool, the worktree tools move
- * claude's own working directory, and PowerShell is Windows-only.
+ * claude's own working directory, and both shells would run on the host.
  */
-export const REMOVED = [...LOCAL, "LSP", "Monitor", "EnterWorktree", "ExitWorktree", "PowerShell"];
+export const REMOVED = [...new Set([...LOCAL, "Bash", "PowerShell", "LSP", "Monitor", "EnterWorktree", "ExitWorktree"])];
 
 /** claude puts every MCP tool behind `mcp__<server>__`. It only exists between claude and the SDK. */
 export const PREFIX = "mcp__cc__";

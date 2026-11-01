@@ -1,5 +1,7 @@
 import { $ } from "bun";
+import { release, type } from "node:os";
 import { dirname, join } from "node:path";
+import { LOCAL, SHELL } from "./names";
 import { home } from "./tools/util";
 
 const run = (cmd: ReturnType<typeof $>, cwd: string) => cmd.cwd(cwd).quiet().nothrow().text().then((s) => s.trim());
@@ -38,13 +40,13 @@ async function git(cwd: string): Promise<string> {
  * supplies the local ones in their place.
  */
 export async function environment(cwd: string, addDirs: string[] = []): Promise<string> {
-  const [gitStatus, claudeMd, os] = await Promise.all([git(cwd), memory(cwd), run($`uname -sr`, cwd)]);
+  const [gitStatus, claudeMd] = await Promise.all([git(cwd), memory(cwd)]);
   const extra = addDirs.length ? `\n - Additional working directories: ${addDirs.join(", ")}` : "";
   return `# Environment (cc-remote)
-This session runs through cc-remote. Your Read, Write, Edit, NotebookEdit, Bash, Glob and Grep tools execute on the user's machine, not on the machine hosting this session. Any other working directory you are told about belongs to the host; ignore it and use this one.
+This session runs through cc-remote. Your ${LOCAL.slice(0, -1).join(", ")} and ${LOCAL.at(-1)} tools execute on the user's machine, not on the machine hosting this session. Any other working directory you are told about belongs to the host; ignore it and use this one.
  - Working directory: ${cwd}${extra}
  - Is a git repository: ${gitStatus ? "yes" : "no"}
  - Platform: ${process.platform}
- - OS version: ${os}
- - Shell: bash${gitStatus}${claudeMd}`;
+ - OS version: ${type()} ${release()}
+ - Shell: ${SHELL === "PowerShell" ? "PowerShell" : "bash"}${gitStatus}${claudeMd}`;
 }

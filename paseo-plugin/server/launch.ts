@@ -1,14 +1,14 @@
 import { execFile, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import type { AcpStream, AcpStreamMessage } from "@getpaseo/plugin/server/acp";
 import type { Connection } from "../shared/settings";
 
 const HOST_FILE = join(homedir(), ".config", "cc-remote", "host");
 
 function expandHome(path: string): string {
-  return path === "~" || path.startsWith("~/") ? join(homedir(), path.slice(1)) : path;
+  return path === "~" || path.startsWith("~/") || path.startsWith("~\\") ? join(homedir(), path.slice(1)) : path;
 }
 
 /** The argv and environment that start cc-remote with these settings, plus any extra arguments. */
@@ -18,8 +18,10 @@ export function launch(connection: Connection, extra: string[] = []) {
   argv.push(...extra);
 
   const env: NodeJS.ProcessEnv = { ...process.env };
-  // The README installs cc-remote to ~/.local/bin, which a daemon's PATH often lacks.
-  env.PATH = [env.PATH, join(homedir(), ".local", "bin")].filter(Boolean).join(":");
+  // `bun link` installs cc-remote to ~/.bun/bin, and people copy it to ~/.local/bin; a daemon's
+  // PATH often lacks both. Windows spells the variable Path, and a copied env is case-sensitive.
+  const key = Object.keys(env).find((k) => k.toUpperCase() === "PATH") ?? "PATH";
+  env[key] = [env[key], join(homedir(), ".bun", "bin"), join(homedir(), ".local", "bin")].filter(Boolean).join(delimiter);
   if (connection.sshCommand) env.CC_REMOTE_SSH = connection.sshCommand;
   return { argv, env };
 }

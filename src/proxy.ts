@@ -3,7 +3,7 @@ import type { ChildProcess } from "node:child_process";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { PassThrough, type Readable } from "node:stream";
-import { EDITS, LOCAL, PREFIX, strip } from "./names";
+import { EDITS, LOCAL, PREFIX, SHELL, strip } from "./names";
 import { projectKey, projectsDir } from "./sessions";
 
 /** What one claude process needs to have its messages read as if it ran in `cwd` on this machine. */
@@ -25,8 +25,8 @@ const inside = (path: string, dir: string) => {
 };
 
 /**
- * Bash command prefixes the user said not to ask about again, per directory, for as long as
- * cc-remote runs. claude can't keep these for us: it matches command rules only on its own Bash.
+ * Shell command prefixes the user said not to ask about again, per directory, for as long as
+ * cc-remote runs. claude can't keep these for us: it matches command rules only on its own shell tools.
  */
 const bashRules = new Map<string, Set<string>>();
 
@@ -55,7 +55,7 @@ const approved = (cwd: string, command: string) => {
  * - SDK → claude: permission rules the user approves for a local tool get the prefix back.
  *
  * It also answers claude's permission requests that claude would answer itself for its built-ins:
- * local edits under acceptEdits, and Bash commands the user said not to ask about again.
+ * local edits under acceptEdits, and shell commands the user said not to ask about again.
  */
 export function rewriter(s: Session) {
   const hostPath = new RegExp(`(?:/[^"\\\\/\\s]+)*/${escape(jsonText(s.hostDir))}(?=["/\\\\\\s]|$)`, "g");
@@ -91,13 +91,13 @@ export function rewriter(s: Session) {
         req.permission_suggestions = local ? [{ type: "setMode", mode: "acceptEdits", destination: "session" }] : undefined;
         return JSON.stringify(m);
       }
-      if (req.tool_name === "Bash") {
+      if (req.tool_name === SHELL) {
         const command = String(req.input?.command ?? "");
         if (approved(s.cwd, command)) return allow();
         // claude suggests approving the whole tool, as for any MCP tool. Offer the command instead.
         const prefix = commandPrefix(command);
         req.permission_suggestions = prefix
-          ? [{ type: "addRules", rules: [{ toolName: "Bash", ruleContent: `${prefix}:*` }], behavior: "allow", destination: "localSettings" }]
+          ? [{ type: "addRules", rules: [{ toolName: SHELL, ruleContent: `${prefix}:*` }], behavior: "allow", destination: "localSettings" }]
           : undefined;
         return JSON.stringify(m);
       }
@@ -118,7 +118,7 @@ export function rewriter(s: Session) {
       if (u.type === "setMode" && u.destination === "session") s.mode = u.mode;
       if (!Array.isArray(u.rules)) continue;
       u.rules = u.rules.filter((r: { toolName: string; ruleContent?: string }) => {
-        if (r.toolName === "Bash" && r.ruleContent && u.behavior === "allow") {
+        if (r.toolName === SHELL && r.ruleContent && u.behavior === "allow") {
           if (!bashRules.has(s.cwd)) bashRules.set(s.cwd, new Set());
           bashRules.get(s.cwd)!.add(r.ruleContent.replace(/:\*$/, ""));
           return false;

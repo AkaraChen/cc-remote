@@ -1,9 +1,10 @@
 import { tool } from "@anthropic-ai/claude-agent-sdk";
+import { join } from "node:path";
 import { z } from "zod";
 import { abs, ok, type Workspace } from "./util";
 
 const LIMIT = 100;
-const SKIP = /(^|\/)(\.git|node_modules)\//;
+const SKIP = /(^|[\\/])(\.git|node_modules)[\\/]/;
 
 export const glob = (ws: Workspace) => tool(
   "Glob",
@@ -21,7 +22,7 @@ export const glob = (ws: Workspace) => tool(
     const skip = !/\.git|node_modules/.test(pattern);
     const files: string[] = [];
     for await (const file of new Bun.Glob(pattern).scan({ cwd, dot: true, onlyFiles: true })) {
-      if (!skip || !SKIP.test(file)) files.push(`${cwd}/${file}`.replace(/\/+/g, "/"));
+      if (!skip || !SKIP.test(file)) files.push(join(cwd, file));
     }
     if (!files.length) return ok("No files found");
 

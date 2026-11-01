@@ -3,7 +3,8 @@ import { setQueryOptionsTransform } from "@agentclientprotocol/claude-agent-acp"
 import acpPkg from "@agentclientprotocol/claude-agent-acp/package.json";
 import { acpProtocolsFromEnv, serveAcp } from "@agentclientprotocol/claude-agent-acp/dist/serve.js";
 import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
-import { userInfo } from "node:os";
+import { tmpdir, userInfo } from "node:os";
+import { dirname, join } from "node:path";
 import pkg from "../package.json";
 import { remote } from "./options";
 import { quote, REMOTE_PATH, rsh, runRemote } from "./ssh";
@@ -78,8 +79,16 @@ async function doctor(target: string) {
  */
 function claudeShim(target: string) {
   const self = Bun.main.startsWith("/$bunfs/") || Bun.main.startsWith("B:/~BUN/") ? [process.execPath] : [process.execPath, Bun.main];
+  const name = `claude-${Bun.hash(target).toString(36)}`;
+  if (process.platform === "win32") {
+    // The temp folder is already per user there.
+    const file = join(tmpdir(), "cc-remote", `${name}.cmd`);
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, `@echo off\r\n${[...self, "--host", target, "--cli"].map((a) => `"${a}"`).join(" ")} %*\r\n`);
+    return file;
+  }
   const dir = `/tmp/cc-remote-${userInfo().uid}`;
-  const file = `${dir}/claude-${Bun.hash(target).toString(36)}`;
+  const file = `${dir}/${name}`;
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   writeFileSync(file, `#!/bin/sh\nexec ${[...self, "--host", target, "--cli"].map(quote).join(" ")} "$@"\n`);
   chmodSync(file, 0o755);
