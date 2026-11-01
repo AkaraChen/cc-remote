@@ -58,6 +58,13 @@ paseo, in `~/.paseo/config.json` under `agents.providers`:
 }
 ```
 
+Or install the paseo plugin in `paseo-plugin/`, which adds a "Claude (remote)" provider and a
+settings screen for the host (Settings → Plugins → cc-remote):
+
+```sh
+paseo plugin install github:AkaraChen/cc-remote:paseo-plugin
+```
+
 `cc-remote --cli <args>` runs `claude <args>` on the server, so `cc-remote --cli auth login`
 logs it in and `cc-remote --cli --version` shows its version.
 
