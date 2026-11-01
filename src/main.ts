@@ -1,16 +1,32 @@
 #!/usr/bin/env bun
-import { BUILTIN_TOOL_NAMES, LEGACY_TOOL_NAME_ALIASES, query, type Options, type PermissionMode, type SDKMessage, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
+import { setQueryOptionsTransform } from "@agentclientprotocol/claude-agent-acp";
+import acpPkg from "@agentclientprotocol/claude-agent-acp/package.json";
+import { acpProtocolsFromEnv, serveAcp } from "@agentclientprotocol/claude-agent-acp/dist/serve.js";
+import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
+import { userInfo } from "node:os";
 import pkg from "../package.json";
-import { parse, USAGE, type Args } from "./args";
-import { PREFIX, REMOVED, LOCAL, strip } from "./names";
-import { canUseTool, denyHook, format, isLocal, parseRules } from "./permissions";
-import { environment } from "./prompt";
-import { REMOTE_PATH, rsh, spawner, sshArgs } from "./ssh";
-import { killAll, server } from "./tools";
-import { abs, home } from "./tools/util";
-import { hasTerminal } from "./tty";
+import { remote } from "./options";
+import { quote, REMOTE_PATH, rsh, runRemote } from "./ssh";
+import { killAll } from "./tools";
+import { home } from "./tools/util";
 
-/** verbatimPrompts, which keeps a prompt starting with "/" from being read as a command, needs this. */
+const USAGE = `Usage: cc-remote [--host <host>]
+       cc-remote [--host <host>] --cli <claude arguments...>
+       cc-remote [--host <host>] doctor
+
+Claude Code as an ACP agent, with the model on a remote host and the tools on this machine.
+Point an ACP client (Zed, paseo, ...) at \`cc-remote --host <host>\`.
+
+  --host <host>    ssh host where claude is installed and logged in
+                   (else $CC_REMOTE_HOST, else ~/.config/cc-remote/host)
+  --cli <args...>  run claude on the host with these arguments, e.g. --cli auth login
+  doctor           check the connection and the remote claude version
+  -v, --version    print the version
+  -h, --help       print this help
+
+  CC_REMOTE_SSH="ssh -p 2222"   ssh command to use, like rsync's RSYNC_RSH`;
+
+/** The oldest remote claude cc-remote has been run against. */
 const MIN_CLAUDE = "2.1.248";
 
 const fail = (message: string): never => {
@@ -24,132 +40,87 @@ const older = (a: string, b: string) => {
   return false;
 };
 
+function parse(argv: string[]) {
+  const args = { host: undefined as string | undefined, cli: undefined as string[] | undefined, doctor: false, version: false, help: false };
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i]!;
+    if (a === "--cli") { args.cli = argv.slice(i + 1); break; }
+    if (a === "--host") args.host = argv[++i] ?? fail("--host needs a value");
+    else if (a.startsWith("--host=")) args.host = a.slice(7);
+    else if (a === "doctor") args.doctor = true;
+    else if (a === "-v" || a === "--version") args.version = true;
+    else if (a === "-h" || a === "--help") args.help = true;
+    else fail(`unknown argument ${a}. See cc-remote --help`);
+  }
+  return args;
+}
+
 async function host(flag?: string): Promise<string> {
   const file = Bun.file(`${home}/.config/cc-remote/host`);
-  const found = flag ?? process.env.CC_REMOTE_HOST ?? ((await file.exists()) ? (await file.text()).trim() : "");
+  const found = flag ?? Bun.env.CC_REMOTE_HOST ?? ((await file.exists()) ? (await file.text()).trim() : "");
   return found || fail("no host. Pass --host, set CC_REMOTE_HOST, or write the host to ~/.config/cc-remote/host");
 }
 
 async function doctor(target: string) {
-  console.log(`cc-remote ${pkg.version} (agent sdk ${pkg.dependencies["@anthropic-ai/claude-agent-sdk"]})`);
+  console.log(`cc-remote ${pkg.version} (claude-agent-acp ${acpPkg.version})`);
   console.log(`host: ${target} via ${rsh().join(" ")}`);
-  const proc = Bun.spawn(sshArgs(target, `${REMOTE_PATH} claude --version`), { stdout: "pipe", stderr: "inherit", stdin: "ignore" });
+  const proc = Bun.spawn([...rsh(), "-T", target, `${REMOTE_PATH} claude --version`], { stdout: "pipe", stderr: "inherit", stdin: "ignore" });
   const out = (await new Response(proc.stdout).text()).trim();
   if ((await proc.exited) !== 0 || !out) fail(`could not run claude on ${target}`);
-  const version = out.split(" ")[0]!;
   console.log(`remote claude: ${out}`);
-  if (older(version, MIN_CLAUDE)) fail(`remote claude is older than ${MIN_CLAUDE}. Run \`claude update\` on ${target}.`);
+  if (older(out.split(" ")[0]!, MIN_CLAUDE)) fail(`remote claude is older than ${MIN_CLAUDE}. Run \`claude update\` on ${target}.`);
   console.log("ok");
 }
 
-/** Text input: the prompt argument, plus whatever was piped in, like `cat log | claude -p "explain"`. */
-async function textPrompt(args: Args): Promise<string> {
-  const piped = process.stdin.isTTY ? "" : (await Bun.stdin.text()).trim();
-  const prompt = [args.prompt, piped].filter(Boolean).join("\n\n");
-  return prompt || fail("no prompt. Pass one as an argument or pipe it in. See cc-remote --help");
+/**
+ * claude-agent-acp runs `claude auth status`, `claude auth logout` and the like itself. This points
+ * it at a script that runs them on the host, through `cc-remote --cli`.
+ */
+function claudeShim(target: string) {
+  const self = Bun.main.startsWith("/$bunfs/") || Bun.main.startsWith("B:/~BUN/") ? [process.execPath] : [process.execPath, Bun.main];
+  const dir = `/tmp/cc-remote-${userInfo().uid}`;
+  const file = `${dir}/claude-${Bun.hash(target).toString(36)}`;
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  writeFileSync(file, `#!/bin/sh\nexec ${[...self, "--host", target, "--cli"].map(quote).join(" ")} "$@"\n`);
+  chmodSync(file, 0o755);
+  return file;
 }
 
-/** stream-json input: one SDK user message per line of stdin. */
-async function* streamPrompt(): AsyncIterable<SDKUserMessage> {
-  for await (const line of console) if (line.trim()) yield JSON.parse(line);
-}
-
-async function options(args: Args, target: string, cwd: string): Promise<Options> {
-  const allow = parseRules(args.allowedTools);
-  const deny = parseRules(args.disallowedTools);
-  const env = await environment(cwd, args.addDirs.map(abs));
-  const append = [env, args.appendSystemPrompt].filter(Boolean).join("\n\n");
-
-  return {
-    pathToClaudeCodeExecutable: "claude",
-    spawnClaudeCodeProcess: spawner(target, cwd, { CLAUDE_CODE_DISABLE_CLAUDE_MDS: "1" }),
-    mcpServers: { cc: server },
-    toolAliases: Object.fromEntries(LOCAL.map((t) => [t, PREFIX + t])),
-    // Allow rules are checked here in canUseTool, except scoped rules for tools claude runs itself
-    // (WebFetch(domain:…)), which only claude can match. Bare names passed to claude would bypass
-    // canUseTool entirely, and the SDK warns about that.
-    allowedTools: allow.filter((r) => !isLocal(r) && r.content !== undefined).map((r) => format(r)),
-    disallowedTools: [
-      ...REMOVED,
-      // Like claude -p: with nobody to answer, Claude shouldn't ask.
-      ...((await hasTerminal()) ? [] : ["AskUserQuestion"]),
-      ...deny.filter((r) => !isLocal(r) || r.content === undefined).map((r) => format(r, isLocal(r) ? PREFIX : "")),
-    ],
-    canUseTool: canUseTool(allow.filter((r) => isLocal(r) || r.content === undefined), args.permissionMode),
-    hooks: denyHook(deny.filter((r) => isLocal(r) && r.content !== undefined)),
-    permissionMode: args.permissionMode as PermissionMode | undefined,
-    allowDangerouslySkipPermissions: args.permissionMode === "bypassPermissions",
-    systemPrompt: args.systemPrompt
-      ? { type: "custom", prompt: `${args.systemPrompt}\n\n${append}` }
-      : { type: "preset", preset: "claude_code", excludeDynamicSections: true, append },
-    verbatimPrompts: true,
-    includePartialMessages: args.partial,
-    model: args.model,
-    fallbackModel: args.fallbackModel,
-    effort: args.effort,
-    maxTurns: args.maxTurns,
-    maxBudgetUsd: args.maxBudgetUsd,
-    outputFormat: args.jsonSchema ? { type: "json_schema", schema: JSON.parse(args.jsonSchema) } : undefined,
-    continue: args.continue,
-    resume: args.resume,
-    sessionId: args.sessionId,
+/** As claude-agent-acp's own entry point: ACP on stdio, everything else on stderr. */
+function serve(target: string) {
+  process.env.CLAUDE_CODE_EXECUTABLE = claudeShim(target);
+  setQueryOptionsTransform(remote(target));
+  console.log = console.error;
+  console.info = console.error;
+  console.warn = console.error;
+  console.debug = console.error;
+  process.on("unhandledRejection", (reason) => console.error("cc-remote: unhandled rejection:", reason));
+  const acp = serveAcp(undefined, { protocols: acpProtocolsFromEnv(Bun.env.CLAUDE_AGENT_ACP_PROTOCOL) });
+  const shutdown = async () => {
+    await acp.dispose().catch((e: unknown) => console.error("cc-remote: cleanup failed:", e));
+    process.exit(0);
   };
+  acp.closed.then(shutdown);
+  process.on("SIGTERM", shutdown);
+  process.on("SIGINT", shutdown);
+  process.stdin.resume();
 }
 
-/** Checks the remote claude once it reports in. */
-function checkInit(m: Extract<SDKMessage, { type: "system"; subtype: "init" }>, target: string, verbose: boolean) {
-  if (older(m.claude_code_version, MIN_CLAUDE)) fail(`claude ${m.claude_code_version} on ${target} is older than ${MIN_CLAUDE}. Run \`claude update\` there.`);
-  if (m.mcp_servers.find((s) => s.name === "cc")?.status !== "connected") fail("the local tools did not connect to the remote claude");
-  const known = new Set<string>([...BUILTIN_TOOL_NAMES, ...Object.keys(LEGACY_TOOL_NAME_ALIASES)]);
-  const unknown = m.tools.filter((t) => !t.startsWith("mcp__") && !known.has(t));
-  if (verbose && unknown.length) console.error(`cc-remote: warning: claude on ${target} has tools this cc-remote doesn't know, and they run there: ${unknown.join(", ")}`);
-}
-
-async function main() {
-  let args: Args;
-  try {
-    args = parse(process.argv.slice(2));
-  } catch (e) {
-    return fail(`${(e as Error).message}\nSee cc-remote --help`);
-  }
-  if (args.help) return console.log(USAGE);
-  if (args.version) return console.log(`${pkg.version} (cc-remote)`);
-  const target = await host(args.host);
-  if (args.doctor) return doctor(target);
-
-  const cwd = process.cwd();
-  const prompt = args.inputFormat === "stream-json" ? streamPrompt() : await textPrompt(args);
-  let code = 1;
-  let result = false;
-  try {
-    for await (const m of query({ prompt, options: await options(args, target, cwd) })) {
-      if (m.type === "system" && m.subtype === "init") {
-        checkInit(m, target, args.verbose);
-        m.cwd = cwd; // claude reports the host-side folder; the tools run here.
-      }
-      if ("sdk_host_only" in m && m.sdk_host_only) continue;
-      if (args.outputFormat === "stream-json") console.log(strip(JSON.stringify(m)));
-      if (m.type !== "result") continue;
-      result = true;
-      code = m.is_error ? 1 : 0;
-      if (args.outputFormat === "json") console.log(strip(JSON.stringify(m)));
-      if (args.outputFormat === "text") console.log(m.subtype === "success" ? m.result : m.errors.join("\n") || m.subtype);
-    }
-  } catch (e) {
-    // The SDK throws after an error result too; only report failures that produced no result.
-    if (!result) console.error(`cc-remote: ${(e as Error).message}`);
-  }
-  process.exit(code);
-}
-
-// Under bypassPermissions the SDK warns that canUseTool goes unused. It doesn't: AskUserQuestion,
-// and the few actions no mode approves, still come to it.
+// We approve our read-only tools with bare allowedTools entries on purpose, which the SDK warns about.
 const emitWarning = process.emitWarning.bind(process);
 process.emitWarning = ((warning: string | Error, ...rest: [{ code?: string }?]) => {
   if (rest[0]?.code !== "CLAUDE_SDK_CAN_USE_TOOL_SHADOWED") emitWarning(warning, ...(rest as []));
 }) as typeof process.emitWarning;
 
-process.on("exit", killAll);
-process.on("SIGINT", () => process.exit(130));
-process.on("SIGTERM", () => process.exit(143));
-await main();
+const args = parse(process.argv.slice(2));
+if (args.help) {
+  console.log(USAGE);
+} else if (args.version) {
+  console.log(`${pkg.version} (cc-remote, claude-agent-acp ${acpPkg.version})`);
+} else {
+  const target = await host(args.host);
+  process.on("exit", killAll);
+  if (args.cli) process.exit(await runRemote(target, args.cli, process.cwd()));
+  else if (args.doctor) await doctor(target);
+  else serve(target);
+}

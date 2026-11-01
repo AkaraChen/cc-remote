@@ -1,13 +1,10 @@
 import { tool } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
-import { err, ok, root } from "./util";
+import { err, ok, type Workspace } from "./util";
 
 const MAX_OUTPUT = 30_000;
 const TMP = (Bun.env.TMPDIR ?? "/tmp").replace(/\/$/, "");
-const PWD_FILE = `${TMP}/cc-remote-pwd-${process.pid}`;
-
-/** Like Claude Code's Bash: the working directory persists between calls. */
-let cwd = root;
+let calls = 0;
 
 /**
  * Every command runs in its own process group, so a timeout kills everything it started.
@@ -22,14 +19,16 @@ const kill = (pid: number) => { try { process.kill(-pid, "SIGKILL"); } catch {} 
 /** The trap records where the command left us; `exec 2>&1` interleaves stderr like a terminal would. */
 const script = (command: string) => `exec 2>&1\ntrap 'pwd -P >| "$__CC_REMOTE_PWD"' EXIT\n${command}`;
 
-async function run(command: string, timeoutMs: number, signal?: AbortSignal) {
+/** Like Claude Code's Bash: the working directory persists between calls, through ws.cwd. */
+async function run(ws: Workspace, command: string, timeoutMs: number, signal?: AbortSignal) {
+  const pwdFile = `${TMP}/cc-remote-pwd-${process.pid}-${++calls}`;
   const proc = Bun.spawn(["bash", "-c", script(command)], {
-    cwd,
+    cwd: ws.cwd,
     detached: true,
     stdin: "ignore",
     stdout: "pipe",
     stderr: "ignore",
-    env: { ...Bun.env, __CC_REMOTE_PWD: PWD_FILE },
+    env: { ...Bun.env, __CC_REMOTE_PWD: pwdFile },
   });
   groups.add(proc.pid);
   let timedOut = false;
@@ -49,19 +48,23 @@ async function run(command: string, timeoutMs: number, signal?: AbortSignal) {
   // A backgrounded child (`cmd &`) can hold the pipe open after bash exits. Don't wait for it.
   await Promise.race([reading, Bun.sleep(200)]);
   await reader.cancel();
+  const pwd = Bun.file(pwdFile);
+  const newCwd = (await pwd.text().catch(() => "")).trim();
+  if (newCwd) ws.cwd = newCwd;
+  await pwd.delete().catch(() => {});
   return { out, code, timedOut };
 }
 
 /** run_in_background: output goes to a file the model can Read; the command dies with cc-remote. */
-function background(command: string) {
+function background(ws: Workspace, command: string) {
   const output = `${TMP}/cc-remote-bg-${process.pid}-${Date.now()}.log`;
   const proc = Bun.spawn(["bash", "-c", script(command)], {
-    cwd,
+    cwd: ws.cwd,
     detached: true,
     stdin: "ignore",
     stdout: Bun.file(output),
     stderr: "ignore",
-    env: { ...Bun.env, __CC_REMOTE_PWD: `${PWD_FILE}-bg` },
+    env: { ...Bun.env, __CC_REMOTE_PWD: "/dev/null" },
   });
   proc.unref();
   groups.add(proc.pid);
@@ -70,7 +73,7 @@ function background(command: string) {
   );
 }
 
-export const bash = tool(
+export const bash = (ws: Workspace) => tool(
   "Bash",
   `Executes a bash command on the user's local machine and returns its combined stdout and stderr.
 
@@ -89,12 +92,9 @@ export const bash = tool(
     run_in_background: z.boolean().optional().describe("Set to true to run this command in the background. Read the output file it returns to check on it."),
   },
   async ({ command, timeout, run_in_background }, extra) => {
-    if (run_in_background) return background(command);
+    if (run_in_background) return background(ws, command);
     const limit = Math.min(Math.max(timeout ?? 120_000, 1_000), 600_000);
-    const { out, code, timedOut } = await run(command, limit, (extra as { signal?: AbortSignal })?.signal);
-
-    const newCwd = (await Bun.file(PWD_FILE).text().catch(() => "")).trim();
-    if (newCwd) cwd = newCwd;
+    const { out, code, timedOut } = await run(ws, command, limit, (extra as { signal?: AbortSignal })?.signal);
 
     let text = out.length > MAX_OUTPUT ? `${out.slice(0, MAX_OUTPUT)}\n\n... [output truncated]` : out.trimEnd();
     if (timedOut) text += `${text ? "\n" : ""}Command timed out after ${limit}ms`;

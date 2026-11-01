@@ -2,15 +2,18 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { bash } from "../src/tools/bash";
-import { edit } from "../src/tools/edit";
-import { glob } from "../src/tools/glob";
-import { grep } from "../src/tools/grep";
-import { notebookEdit } from "../src/tools/notebook";
-import { read } from "../src/tools/read";
-import { write } from "../src/tools/write";
+import { bash as makeBash } from "../src/tools/bash";
+import { edit as makeEdit } from "../src/tools/edit";
+import { glob as makeGlob } from "../src/tools/glob";
+import { grep as makeGrep } from "../src/tools/grep";
+import { notebookEdit as makeNotebookEdit } from "../src/tools/notebook";
+import { read as makeRead } from "../src/tools/read";
+import { workspace } from "../src/tools/util";
+import { write as makeWrite } from "../src/tools/write";
 
 const dir = mkdtempSync(join(tmpdir(), "cc-remote-test-"));
+const ws = workspace(dir);
+const [bash, edit, glob, grep, notebookEdit, read, write] = [makeBash, makeEdit, makeGlob, makeGrep, makeNotebookEdit, makeRead, makeWrite].map((t) => t(ws));
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
 type Result = { content: { type: string; text?: string }[]; isError?: boolean };
@@ -63,9 +66,15 @@ describe("Bash", () => {
     expect(await call(bash, { command: "echo out; echo err >&2" })).toEqual({ text: "out\nerr", error: false });
     expect(await call(bash, { command: "echo nope; exit 3" })).toEqual({ text: "nope\nExit code 3", error: true });
   });
-  test("keeps the working directory between calls", async () => {
-    await call(bash, { command: `cd ${dir}` });
-    expect((await call(bash, { command: "pwd -P" })).text).toBe(Bun.spawnSync(["realpath", dir]).stdout.toString().trim());
+  test("keeps the working directory between calls, per workspace", async () => {
+    await call(bash, { command: `mkdir -p sub && cd sub` });
+    expect((await call(bash, { command: "pwd -P" })).text).toBe(Bun.spawnSync(["realpath", join(dir, "sub")]).stdout.toString().trim());
+    const other = makeBash(workspace(tmpdir()));
+    expect((await call(other, { command: "pwd -P" })).text).toBe(Bun.spawnSync(["realpath", tmpdir()]).stdout.toString().trim());
+  });
+  test("resolves relative paths against the workspace", async () => {
+    await call(write, { file_path: "rel.txt", content: "here" });
+    expect(await Bun.file(join(dir, "rel.txt")).text()).toBe("here");
   });
   test("runs commands in the background and writes their output to a file", async () => {
     const { text } = await call(bash, { command: "echo bg-ok; sleep 30", run_in_background: true });

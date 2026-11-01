@@ -1,13 +1,13 @@
 import { tool } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import { renderNotebook } from "./notebook";
-import { abs, err, ok } from "./util";
+import { abs, err, ok, type Workspace } from "./util";
 
 const IMAGES: Record<string, string> = {
   png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp",
 };
 
-export const read = tool(
+export const read = (ws: Workspace) => tool(
   "Read",
   `Reads a file from the user's local filesystem.
 
@@ -25,7 +25,7 @@ export const read = tool(
     limit: z.number().int().optional().describe("The number of lines to read. Only provide if the file is too large to read at once."),
   },
   async ({ file_path, offset, limit }) => {
-    const path = abs(file_path);
+    const path = abs(ws, file_path);
     const file = Bun.file(path);
     const info = await file.stat().catch(() => null);
     if (!info) return err(`File does not exist: ${path}`);

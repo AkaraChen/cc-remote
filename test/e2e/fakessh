@@ -1,0 +1,10 @@
+#!/bin/sh
+# Stands in for ssh in end-to-end runs: drops the options and the host, and runs the remote
+# command on this machine with a separate HOME, so the "host" folders don't mix with local ones.
+# It shares this machine's Claude Code login through CLAUDE_CONFIG_DIR.
+while [ $# -gt 1 ]; do
+  case "$1" in -o|-p|-i) shift 2;; -*) shift;; *) shift; break;; esac
+done
+export HOME="${FAKE_HOST_HOME:-/tmp/cc-remote-fake-host}" CLAUDE_CONFIG_DIR="${CLAUDE_CONFIG_DIR:-$REAL_HOME/.claude}"
+mkdir -p "$HOME/.local/bin" && ln -sf "$(PATH="$REAL_HOME/.local/bin:$PATH" command -v claude)" "$HOME/.local/bin/claude"
+exec sh -c "$1"

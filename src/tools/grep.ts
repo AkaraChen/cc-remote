@@ -1,6 +1,6 @@
 import { tool } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
-import { abs, err, ok } from "./util";
+import { abs, err, ok, type Workspace } from "./util";
 
 const rg = Bun.which("rg");
 
@@ -29,7 +29,7 @@ function command(i: Input, mode: string, path: string): string[] {
     "-e", i.pattern, "--", path];
 }
 
-export const grep = tool(
+export const grep = (ws: Workspace) => tool(
   "Grep",
   `Searches file contents on the user's local filesystem with ripgrep (or grep when ripgrep is not installed).
 
@@ -54,7 +54,7 @@ export const grep = tool(
   },
   async (input) => {
     const mode = input.output_mode ?? "files_with_matches";
-    const proc = Bun.spawn(command(input, mode, abs(input.path ?? ".")), { stdout: "pipe", stderr: "pipe", stdin: "ignore" });
+    const proc = Bun.spawn(command(input, mode, abs(ws, input.path ?? ".")), { stdout: "pipe", stderr: "pipe", stdin: "ignore" });
     const [out, error, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
     if (code > 1) return err(error.trim() || `search failed with exit code ${code}`);
 

@@ -1,8 +1,8 @@
 import { tool } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
-import { abs, err, ok } from "./util";
+import { abs, err, ok, type Workspace } from "./util";
 
-export const edit = tool(
+export const edit = (ws: Workspace) => tool(
   "Edit",
   `Performs exact string replacements in a file on the user's local filesystem.
 
@@ -17,7 +17,7 @@ export const edit = tool(
     replace_all: z.boolean().optional().describe("Replace all occurrences of old_string (default false)"),
   },
   async ({ file_path, old_string, new_string, replace_all }) => {
-    const path = abs(file_path);
+    const path = abs(ws, file_path);
     if (old_string === new_string) return err("No changes to make: old_string and new_string are exactly the same.");
 
     const file = Bun.file(path);

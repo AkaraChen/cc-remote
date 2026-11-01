@@ -1,0 +1,59 @@
+diff --git a/dist/acp-agent.d.ts b/dist/acp-agent.d.ts
+index 4dc08baf1ab993b3249373564a28b7fe76b37df9..a5991fa37b1f12bf71efb8bbbf89dac30c13ab9c 100644
+--- a/dist/acp-agent.d.ts
++++ b/dist/acp-agent.d.ts
+@@ -1014,6 +1014,8 @@ type StreamedToolInput = {
+     emittedThroughComma: number;
+ };
+ export type StreamedToolInputCache = Map<string, Map<number, StreamedToolInput>>;
++/** Rewrites the options of every query() just before it starts the Claude Code process. */
++export declare function setQueryOptionsTransform(transform: ((options: Options) => Options | Promise<Options>) | undefined): void;
+ export declare function claudeCliPath(): Promise<string>;
+ /**
+  * Return user-message content with local-command and injected-context marker
+diff --git a/dist/acp-agent.js b/dist/acp-agent.js
+index a86e0a1f3fec00bd1d021f84ba5c50a0fb02ba77..70048efbc36c8bfc2815e96d9ae11b44f185e279 100644
+--- a/dist/acp-agent.js
++++ b/dist/acp-agent.js
+@@ -672,6 +672,11 @@ function recoveredToolInput(prefix) {
+         return undefined;
+     }
+ }
++let queryOptionsTransform;
++/** Rewrites the options of every query() just before it starts the Claude Code process. */
++export function setQueryOptionsTransform(transform) {
++    queryOptionsTransform = transform;
++}
+ export async function claudeCliPath() {
+     if (process.env.CLAUDE_CODE_EXECUTABLE) {
+         return process.env.CLAUDE_CODE_EXECUTABLE;
+@@ -9240,7 +9245,7 @@ export class ClaudeAcpAgent {
+         }
+         const q = query({
+             prompt: input,
+-            options,
++            options: queryOptionsTransform ? await queryOptionsTransform(options) : options,
+         });
+         this.useAuthStatusSettings(settingsManager, configuredSettingsObject, userProvidedOptions?.env);
+         const authSettingsEpoch = this.authEpoch;
+diff --git a/dist/lib.d.ts b/dist/lib.d.ts
+index 88e1b50da23938bd8c1ba96f466ce2ada5937d58..f5db226187d5057653060e921cb2b8140a59a191 100644
+--- a/dist/lib.d.ts
++++ b/dist/lib.d.ts
+@@ -1,4 +1,4 @@
+-export { ClaudeAcpAgent, isLocalCommandMetadata, stripLocalCommandMetadata, runAcp, toAcpNotifications, streamEventToAcpNotifications, type ToolUpdateMeta, type NewSessionMeta, type SDKMessageFilter, } from "./acp-agent.js";
++export { ClaudeAcpAgent, setQueryOptionsTransform, isLocalCommandMetadata, stripLocalCommandMetadata, runAcp, toAcpNotifications, streamEventToAcpNotifications, type ToolUpdateMeta, type NewSessionMeta, type SDKMessageFilter, } from "./acp-agent.js";
+ export { nodeToWebReadable, nodeToWebWritable, Pushable, unreachable } from "./utils.js";
+ export { toolInfoFromToolUse, toDisplayPath, planEntries, toolUpdateFromToolResult, } from "./tools.js";
+ export { SettingsManager, type SettingsManagerOptions } from "./settings.js";
+diff --git a/dist/lib.js b/dist/lib.js
+index b162f50419b2197cf1decd8b8281c985705317c8..49d68e1daf164ead9e18c8acc39acb9231c249e0 100644
+--- a/dist/lib.js
++++ b/dist/lib.js
+@@ -1,5 +1,5 @@
+ // Export the main agent class and utilities for library usage
+-export { ClaudeAcpAgent, isLocalCommandMetadata, stripLocalCommandMetadata, runAcp, toAcpNotifications, streamEventToAcpNotifications, } from "./acp-agent.js";
++export { ClaudeAcpAgent, setQueryOptionsTransform, isLocalCommandMetadata, stripLocalCommandMetadata, runAcp, toAcpNotifications, streamEventToAcpNotifications, } from "./acp-agent.js";
+ export { nodeToWebReadable, nodeToWebWritable, Pushable, unreachable } from "./utils.js";
+ export { toolInfoFromToolUse, toDisplayPath, planEntries, toolUpdateFromToolResult, } from "./tools.js";
+ export { SettingsManager } from "./settings.js";

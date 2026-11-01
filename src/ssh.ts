@@ -1,12 +1,11 @@
 import type { SpawnedProcess, SpawnOptions } from "@anthropic-ai/claude-agent-sdk";
 import { spawn } from "node:child_process";
-import { hostname } from "node:os";
+import { hostname, userInfo } from "node:os";
+import { proxy } from "./proxy";
+import { localTranscript } from "./sessions";
 
 /** Single-quotes a word for a POSIX shell. */
 export const quote = (s: string) => `'${s.replaceAll("'", `'\\''`)}'`;
-
-/** The ssh command, like rsync's RSYNC_RSH: `CC_REMOTE_SSH="ssh -p 2222"`. */
-export const rsh = () => (process.env.CC_REMOTE_SSH ?? "ssh").split(/\s+/).filter(Boolean);
 
 /**
  * Client keepalives, so a silent dead link fails in about a minute instead of hanging the protocol.
@@ -15,37 +14,83 @@ export const rsh = () => (process.env.CC_REMOTE_SSH ?? "ssh").split(/\s+/).filte
  */
 const KEEPALIVE = ["-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3"];
 
-/** `$CC_REMOTE_SSH`, plus keepalives when that command is ssh, then `-T`, the host, and the remote command. */
-export function sshArgs(host: string, remote: string): string[] {
-  const args = rsh();
-  const bin = args[0]?.split("/").pop();
-  return [...args, ...(bin === "ssh" ? KEEPALIVE : []), "-T", host, remote];
-}
+/**
+ * The ssh command, like rsync's RSYNC_RSH: `CC_REMOTE_SSH="ssh -p 2222"`, plus keepalives when
+ * that command is ssh. By default sessions share one connection, since an ACP client may open
+ * several at once and probe besides.
+ */
+export const rsh = () => {
+  const custom = Bun.env.CC_REMOTE_SSH?.split(/\s+/).filter(Boolean);
+  if (custom?.length) return custom[0]!.split("/").pop() === "ssh" ? [...custom, ...KEEPALIVE] : custom;
+  const socket = `/tmp/cc-remote-${userInfo().uid}-%C`;
+  return ["ssh", "-o", "ControlMaster=auto", "-o", `ControlPath=${socket}`, "-o", "ControlPersist=10m", ...KEEPALIVE];
+};
 
 /** Native installs of claude live in ~/.local/bin, which non-interactive ssh shells often leave off PATH. */
 export const REMOTE_PATH = `PATH="$HOME/.local/bin:$PATH"`;
 
-/** The shell command the remote side runs: cd into a stable per-directory folder, then exec claude. */
+/** The host folder a local directory maps to, relative to the host's home. */
+export const hostDir = (cwd: string) => `.cc-remote/ws/${hostname()}${cwd}`;
+
+/** Enters a stable per-directory folder on the host, so sessions and --continue have a home. */
+const enter = (cwd: string) => {
+  const dir = `"$HOME"/${quote(hostDir(cwd))}`;
+  return `mkdir -p ${dir} && cd ${dir}`;
+};
+
+/** The shell command the host runs: enter the folder, then exec claude. */
 export function remoteCommand(args: string[], env: Record<string, string>, cwd: string): string {
-  const dir = `"$HOME"/.cc-remote/ws/${quote(hostname() + cwd)}`;
   const vars = Object.entries(env).map(([k, v]) => quote(`${k}=${v}`));
-  return `mkdir -p ${dir} && cd ${dir} && ${REMOTE_PATH} exec env ${vars.join(" ")} claude ${args.map(quote).join(" ")}`;
+  return `${enter(cwd)} && ${REMOTE_PATH} exec env ${vars.join(" ")} claude ${args.map(quote).join(" ")}`;
 }
 
 /**
- * The SDK normally spawns claude locally and talks to it over stdin/stdout.
- * We hand it ssh instead; the protocol, tool calls included, rides over the same two pipes.
+ * Copies a transcript from stdin into claude's projects folder on the host, unless one is there.
+ * The folder name is claude's: the real path with every non-alphanumeric turned to `-`.
+ */
+export function uploadCommand(sessionId: string, cwd: string): string {
+  const projects = `"\${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/$(pwd -P | sed 's/[^a-zA-Z0-9]/-/g')"`;
+  const file = `"$P"/${quote(`${sessionId}.jsonl`)}`;
+  return `${enter(cwd)} && P=${projects} && mkdir -p "$P" && if [ -f ${file} ]; then cat >/dev/null; else cat >${file}; fi`;
+}
+
+/** Runs claude on the host with these arguments, for `cc-remote --cli`. */
+export function runRemote(host: string, args: string[], cwd: string): Promise<number> {
+  const [ssh, ...flags] = rsh();
+  const tty = process.stdin.isTTY && process.stdout.isTTY ? "-t" : "-T";
+  const child = spawn(ssh!, [...flags, tty, host, remoteCommand(args, {}, cwd)], { stdio: "inherit" });
+  return new Promise((done) => child.on("exit", (code) => done(code ?? 1)));
+}
+
+const argument = (args: string[], name: string) => {
+  const i = args.indexOf(name);
+  return i >= 0 ? args[i + 1] : undefined;
+};
+
+/**
+ * The SDK normally spawns claude locally and talks to it over stdin/stdout. We hand it ssh
+ * instead; the protocol, tool calls included, rides over the same two pipes.
  */
 export function spawner(host: string, cwd: string, env: Record<string, string>) {
   return (options: SpawnOptions): SpawnedProcess => {
-    // ssh forwards no environment, so pass along what the SDK added for claude.
+    // ssh forwards no environment, so pass along what the SDK and ACP added for claude.
     const added = Object.fromEntries(
-      Object.entries(options.env).filter((e): e is [string, string] => e[1] !== undefined && process.env[e[0]] !== e[1]),
+      Object.entries(options.env).filter(
+        (e): e is [string, string] => e[1] !== undefined && process.env[e[0]] !== e[1] && e[0] !== "CLAUDE_CONFIG_DIR",
+      ),
     );
-    const [ssh, ...flags] = sshArgs(host, remoteCommand(options.args, { ...added, ...env }, cwd));
-    return spawn(ssh!, flags, {
-      stdio: ["pipe", "pipe", "inherit"],
-      signal: options.signal,
-    });
+    const [ssh, ...flags] = rsh();
+    const main = [ssh!, ...flags, "-T", host, remoteCommand(options.args, { ...added, ...env }, cwd)];
+
+    // A session the host has never seen (a fork, or one a local claude wrote) goes up first.
+    const resume = argument(options.args, "--resume");
+    const transcript = resume && localTranscript(resume, cwd);
+    const command = transcript
+      ? ["sh", "-c", `${[ssh!, ...flags, "-T", host, uploadCommand(resume, cwd)].map(quote).join(" ")} <${quote(transcript)}; exec ${main.map(quote).join(" ")}`]
+      : main;
+
+    const child = spawn(command[0]!, command.slice(1), { stdio: ["pipe", "pipe", "pipe"], signal: options.signal });
+    child.stderr!.on("data", (chunk) => process.stderr.write(chunk));
+    return proxy(child, { cwd, hostDir: hostDir(cwd), mode: argument(options.args, "--permission-mode") ?? "default" });
   };
 }

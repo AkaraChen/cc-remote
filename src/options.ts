@@ -1,0 +1,56 @@
+import type { HookCallbackMatcher, Options } from "@anthropic-ai/claude-agent-sdk";
+import { bridgeAll } from "./bridge";
+import { LOCAL, PREFIX, READS, REMOVED, widenMatcher } from "./names";
+import { environment } from "./prompt";
+import { mirror } from "./sessions";
+import { spawner } from "./ssh";
+import { localTools } from "./tools";
+
+type SystemPrompt = Options["systemPrompt"];
+
+/** claude's default prompt, without the sections it writes about its own (host) machine, plus ours. */
+function withEnvironment(prompt: SystemPrompt, env: string): SystemPrompt {
+  const join = (...parts: (string | undefined)[]) => parts.filter(Boolean).join("\n\n");
+  if (prompt === undefined) return { type: "preset", preset: "claude_code", excludeDynamicSections: true, append: env };
+  if (typeof prompt === "string") return join(prompt, env);
+  if (Array.isArray(prompt)) return [...prompt, env];
+  if (prompt.type === "preset") return { ...prompt, excludeDynamicSections: true, append: join(prompt.append, env) };
+  return { ...prompt, prompt: Array.isArray(prompt.prompt) ? [...prompt.prompt, env] : join(prompt.prompt, env) };
+}
+
+function widenHooks(hooks: Options["hooks"]): Options["hooks"] {
+  if (!hooks) return hooks;
+  return Object.fromEntries(
+    Object.entries(hooks).map(([event, matchers]) => [
+      event,
+      (matchers as HookCallbackMatcher[]).map((m) => ({ ...m, matcher: widenMatcher(m.matcher) })),
+    ]),
+  );
+}
+
+/**
+ * claude-agent-acp builds the options of every session's query(); this moves the session to the
+ * host. claude runs there over ssh, while its file and shell tools, and the MCP servers the ACP
+ * client brought, run here in the session's directory.
+ */
+export function remote(host: string) {
+  return async (options: Options): Promise<Options> => {
+    const cwd = options.cwd ?? process.cwd();
+    // Extra directories are local paths; the host has none of them. They go in the prompt instead.
+    const env = await environment(cwd, options.additionalDirectories ?? []);
+    return {
+      ...options,
+      pathToClaudeCodeExecutable: "claude",
+      spawnClaudeCodeProcess: spawner(host, cwd, { CLAUDE_CODE_DISABLE_CLAUDE_MDS: "1" }),
+      additionalDirectories: [],
+      systemPrompt: withEnvironment(options.systemPrompt, env),
+      mcpServers: { ...bridgeAll(options.mcpServers, cwd, options.abortController?.signal), cc: localTools(cwd) },
+      toolAliases: { ...options.toolAliases, ...Object.fromEntries(LOCAL.map((t) => [t, PREFIX + t])) },
+      disallowedTools: [...(options.disallowedTools ?? []), ...REMOVED],
+      // claude asks before any MCP tool; it never asks before its own reads.
+      allowedTools: [...(options.allowedTools ?? []), ...READS.map((t) => PREFIX + t)],
+      hooks: widenHooks(options.hooks),
+      ...(options.persistSession === false ? {} : { sessionStore: mirror }),
+    };
+  };
+}

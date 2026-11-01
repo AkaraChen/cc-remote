@@ -1,11 +1,11 @@
 import { tool } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
-import { abs, ok } from "./util";
+import { abs, ok, type Workspace } from "./util";
 
 const LIMIT = 100;
 const SKIP = /(^|\/)(\.git|node_modules)\//;
 
-export const glob = tool(
+export const glob = (ws: Workspace) => tool(
   "Glob",
   `Fast file pattern matching on the user's local filesystem.
 
@@ -17,7 +17,7 @@ export const glob = tool(
     path: z.string().optional().describe("The directory to search in. Defaults to the current working directory."),
   },
   async ({ pattern, path }) => {
-    const cwd = abs(path ?? ".");
+    const cwd = abs(ws, path ?? ".");
     const skip = !/\.git|node_modules/.test(pattern);
     const files: string[] = [];
     for await (const file of new Bun.Glob(pattern).scan({ cwd, dot: true, onlyFiles: true })) {

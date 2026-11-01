@@ -1,6 +1,6 @@
 import { tool } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
-import { abs, err, ok } from "./util";
+import { abs, err, ok, type Workspace } from "./util";
 
 type Cell = {
   id?: string;
@@ -52,7 +52,7 @@ export function renderNotebook(text: string): Block[] {
 /** Notebook sources are conventionally stored as a list of lines, each keeping its newline. */
 const lines = (source: string) => source.split(/(?<=\n)/);
 
-export const notebookEdit = tool(
+export const notebookEdit = (ws: Workspace) => tool(
   "NotebookEdit",
   `Replaces, inserts or deletes a cell in a Jupyter notebook (.ipynb file) on the user's local filesystem.
 
@@ -68,7 +68,7 @@ export const notebookEdit = tool(
     edit_mode: z.enum(["replace", "insert", "delete"]).optional().describe("The type of edit to make (replace, insert, delete). Defaults to replace."),
   },
   async ({ notebook_path, cell_id, new_source, cell_type, edit_mode = "replace" }) => {
-    const path = abs(notebook_path);
+    const path = abs(ws, notebook_path);
     if (!path.endsWith(".ipynb")) return err("File must be a Jupyter notebook (.ipynb file). For editing other file types, use the Edit tool.");
     const file = Bun.file(path);
     if (!(await file.exists())) return err(`Notebook file does not exist: ${path}`);
