@@ -1,4 +1,4 @@
-import { writeFileSync } from "node:fs";
+import { rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { MAX_OUTPUT, shellTool, TMP } from "./shell";
 
@@ -32,6 +32,11 @@ function argv(command: string) {
   return [exe, "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", file];
 }
 
+/** PowerShell parses the whole file before running it, so a syntax error keeps it from deleting itself. */
+const cleanup = (argv: string[]) => {
+  try { rmSync(argv.at(-1)!, { force: true }); } catch {}
+};
+
 const chaining = pwsh
   ? "Chain dependent commands with && (PowerShell 7); make independent calls in parallel in one response"
   : "This is Windows PowerShell 5.1: there is no && or ||. Chain dependent commands with `; if ($?) { ... }`; make independent calls in parallel in one response";
@@ -49,5 +54,6 @@ export const powershell = shellTool({
 - Prefer Read, Edit, Write, Glob and Grep over Get-Content, Set-Content, Get-ChildItem and Select-String for file work
 - ${chaining}`,
   argv,
+  cleanup,
   stopHint: (pid) => `taskkill /PID ${pid} /T /F`,
 });

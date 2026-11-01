@@ -1,5 +1,5 @@
 import { createSdkMcpServer } from "@anthropic-ai/claude-agent-sdk";
-import { SHELL } from "../names";
+import { WINDOWS } from "../platform";
 import { bash } from "./bash";
 import { edit } from "./edit";
 import { glob } from "./glob";
@@ -12,7 +12,7 @@ import { workspace } from "./util";
 
 export { killAll } from "./shell";
 
-const shell = SHELL === "PowerShell" ? powershell : bash;
+const shell = WINDOWS ? powershell : bash;
 
 /**
  * One per session, since each session has its own directory. It runs in this process; claude

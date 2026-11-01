@@ -3,7 +3,8 @@ import type { ChildProcess } from "node:child_process";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { PassThrough, type Readable } from "node:stream";
-import { EDITS, LOCAL, PREFIX, SHELL, strip } from "./names";
+import { EDITS, LOCAL, PREFIX, strip } from "./names";
+import { SHELL } from "./platform";
 import { projectKey, projectsDir } from "./sessions";
 
 /** What one claude process needs to have its messages read as if it ran in `cwd` on this machine. */

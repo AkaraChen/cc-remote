@@ -2,10 +2,9 @@ import type { SpawnedProcess, SpawnOptions } from "@anthropic-ai/claude-agent-sd
 import { spawn, spawnSync } from "node:child_process";
 import { closeSync, openSync } from "node:fs";
 import { hostname, userInfo } from "node:os";
+import { WINDOWS } from "./platform";
 import { proxy } from "./proxy";
 import { localTranscript } from "./sessions";
-
-const WINDOWS = process.platform === "win32";
 
 /** Single-quotes a word for a POSIX shell. */
 export const quote = (s: string) => `'${s.replaceAll("'", `'\\''`)}'`;
@@ -88,20 +87,24 @@ export function spawner(host: string, cwd: string, env: Record<string, string>) 
       ),
     );
     const [ssh, ...flags] = rsh();
-    const main = [ssh!, ...flags, "-T", host, remoteCommand(options.args, { ...added, ...env }, cwd)];
+    const base = [ssh!, ...flags, "-T", host];
+    const main = [...base, remoteCommand(options.args, { ...added, ...env }, cwd)];
 
     // A session the host has never seen (a fork, or one a local claude wrote) goes up first.
     const resume = argument(options.args, "--resume");
-    const transcript = resume && localTranscript(resume, cwd);
-    // Windows has no sh to chain the two; there the upload finishes before claude starts.
-    if (transcript && WINDOWS) {
-      const fd = openSync(transcript, "r");
-      spawnSync(ssh!, [...flags, "-T", host, uploadCommand(resume, cwd)], { stdio: [fd, "ignore", "inherit"], windowsHide: true });
-      closeSync(fd);
+    const transcript = resume ? localTranscript(resume, cwd) : undefined;
+    const upload = transcript && resume ? [...base, uploadCommand(resume, cwd)] : undefined;
+    let command = main;
+    if (transcript && upload) {
+      if (WINDOWS) {
+        // Windows has no sh to chain the two; there the upload finishes before claude starts.
+        const fd = openSync(transcript, "r");
+        spawnSync(ssh!, upload.slice(1), { stdio: [fd, "ignore", "inherit"], windowsHide: true });
+        closeSync(fd);
+      } else {
+        command = ["sh", "-c", `${upload.map(quote).join(" ")} <${quote(transcript)}; exec ${main.map(quote).join(" ")}`];
+      }
     }
-    const command = transcript && !WINDOWS
-      ? ["sh", "-c", `${[ssh!, ...flags, "-T", host, uploadCommand(resume, cwd)].map(quote).join(" ")} <${quote(transcript)}; exec ${main.map(quote).join(" ")}`]
-      : main;
 
     const child = spawn(command[0]!, command.slice(1), { stdio: ["pipe", "pipe", "pipe"], signal: options.signal, windowsHide: true });
     child.stderr!.on("data", (chunk) => process.stderr.write(chunk));

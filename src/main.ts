@@ -7,6 +7,7 @@ import { tmpdir, userInfo } from "node:os";
 import { dirname, join } from "node:path";
 import pkg from "../package.json";
 import { remote } from "./options";
+import { WINDOWS } from "./platform";
 import { quote, REMOTE_PATH, rsh, runRemote } from "./ssh";
 import { killAll } from "./tools";
 import { home } from "./tools/util";
@@ -80,17 +81,18 @@ async function doctor(target: string) {
 function claudeShim(target: string) {
   const self = Bun.main.startsWith("/$bunfs/") || Bun.main.startsWith("B:/~BUN/") ? [process.execPath] : [process.execPath, Bun.main];
   const name = `claude-${Bun.hash(target).toString(36)}`;
-  if (process.platform === "win32") {
+  const command = [...self, "--host", target, "--cli"];
+  if (WINDOWS) {
     // The temp folder is already per user there.
     const file = join(tmpdir(), "cc-remote", `${name}.cmd`);
     mkdirSync(dirname(file), { recursive: true });
-    writeFileSync(file, `@echo off\r\n${[...self, "--host", target, "--cli"].map((a) => `"${a}"`).join(" ")} %*\r\n`);
+    writeFileSync(file, `@echo off\r\n${command.map((a) => `"${a}"`).join(" ")} %*\r\n`);
     return file;
   }
   const dir = `/tmp/cc-remote-${userInfo().uid}`;
   const file = `${dir}/${name}`;
   mkdirSync(dir, { recursive: true, mode: 0o700 });
-  writeFileSync(file, `#!/bin/sh\nexec ${[...self, "--host", target, "--cli"].map(quote).join(" ")} "$@"\n`);
+  writeFileSync(file, `#!/bin/sh\nexec ${command.map(quote).join(" ")} "$@"\n`);
   chmodSync(file, 0o755);
   return file;
 }
