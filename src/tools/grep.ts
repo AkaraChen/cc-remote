@@ -25,7 +25,7 @@ function command(i: Input, mode: string, path: string): string[] {
       ...(i.type ? ["--type", i.type] : []),
       "-e", i.pattern, "--", path];
   }
-  return ["grep", "-r", "-E", "-I", "--exclude-dir=.git", "--exclude-dir=node_modules", ...flags,
+  return [grepBin!, "-r", "-E", "-I", "--exclude-dir=.git", "--exclude-dir=node_modules", ...flags,
     ...(i.glob ? [`--include=${i.glob}`] : []),
     "-e", i.pattern, "--", path];
 }

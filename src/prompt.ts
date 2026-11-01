@@ -1,7 +1,8 @@
 import { $ } from "bun";
 import { release, type } from "node:os";
 import { dirname, join } from "node:path";
-import { LOCAL, SHELL } from "./names";
+import { LOCAL } from "./names";
+import { WINDOWS } from "./platform";
 import { home } from "./tools/util";
 
 const run = (cmd: ReturnType<typeof $>, cwd: string) => cmd.cwd(cwd).quiet().nothrow().text().then((s) => s.trim());
@@ -48,5 +49,5 @@ This session runs through cc-remote. Your ${LOCAL.slice(0, -1).join(", ")} and $
  - Is a git repository: ${gitStatus ? "yes" : "no"}
  - Platform: ${process.platform}
  - OS version: ${type()} ${release()}
- - Shell: ${SHELL === "PowerShell" ? "PowerShell" : "bash"}${gitStatus}${claudeMd}`;
+ - Shell: ${WINDOWS ? "PowerShell" : "bash"}${gitStatus}${claudeMd}`;
 }

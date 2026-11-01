@@ -3,11 +3,11 @@ import { closeSync, openSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
+import { WINDOWS } from "../platform";
 import { err, ok, type Workspace } from "./util";
 
 export const MAX_OUTPUT = 30_000;
 export const TMP = tmpdir();
-const WINDOWS = process.platform === "win32";
 let calls = 0;
 
 /**
@@ -29,24 +29,27 @@ export type Shell = {
   name: string;
   description: string;
   argv: (command: string) => string[];
+  /** Files argv wrote for the command, to remove once it exits if it didn't remove them itself. */
+  cleanup?: (argv: string[]) => void;
   stopHint: (pid: number) => string;
 };
 
-const spawn = (shell: Shell, ws: Workspace, command: string, pwdFile: string, stdout: "pipe" | number) =>
-  Bun.spawn(shell.argv(command), {
+const spawn = (argv: string[], ws: Workspace, pwdFile: string, dest: "pipe" | number) =>
+  Bun.spawn(argv, {
     cwd: ws.cwd,
     detached: !WINDOWS,
     windowsHide: true,
     stdin: "ignore",
-    stdout,
-    stderr: stdout,
+    stdout: dest,
+    stderr: dest,
     env: { ...Bun.env, __CC_REMOTE_PWD: pwdFile },
   });
 
 /** Like Claude Code's Bash: the working directory persists between calls, through ws.cwd. */
 async function run(shell: Shell, ws: Workspace, command: string, timeoutMs: number, signal?: AbortSignal) {
   const pwdFile = join(TMP, `cc-remote-pwd-${process.pid}-${++calls}`);
-  const proc = spawn(shell, ws, command, pwdFile, "pipe");
+  const argv = shell.argv(command);
+  const proc = spawn(argv, ws, pwdFile, "pipe");
   groups.add(proc.pid);
   let timedOut = false;
   const timer = setTimeout(() => { timedOut = true; kill(proc.pid); }, timeoutMs);
@@ -64,6 +67,7 @@ async function run(shell: Shell, ws: Workspace, command: string, timeoutMs: numb
   const code = await proc.exited;
   clearTimeout(timer);
   groups.delete(proc.pid);
+  shell.cleanup?.(argv);
   // A backgrounded child (`cmd &`) can hold the pipe open after the shell exits. Don't wait for it.
   await Promise.race([reading, Bun.sleep(200)]);
   await Promise.all(readers.map((r) => r.cancel()));
@@ -77,11 +81,16 @@ async function run(shell: Shell, ws: Workspace, command: string, timeoutMs: numb
 /** run_in_background: output goes to a file the model can Read; the command dies with cc-remote. */
 function background(shell: Shell, ws: Workspace, command: string) {
   const output = join(TMP, `cc-remote-bg-${process.pid}-${Date.now()}.log`);
+  const argv = shell.argv(command);
   const fd = openSync(output, "a");
-  const proc = spawn(shell, ws, command, "", fd);
+  const proc = spawn(argv, ws, "", fd);
   closeSync(fd);
   proc.unref();
   groups.add(proc.pid);
+  proc.exited.then(() => {
+    groups.delete(proc.pid);
+    shell.cleanup?.(argv);
+  });
   return ok(
     `Command running in background with ID: ${proc.pid}. Output is being written to: ${output}. Read that file to check its output. Stop it with ${shell.name}: ${shell.stopHint(proc.pid)}. It stops when this session ends.`,
   );
