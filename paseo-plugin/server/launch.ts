@@ -39,9 +39,12 @@ export function spawnAcp(connection: Connection): AcpStream {
   child.stderr.setEncoding("utf8");
   child.stderr.on("data", (chunk: string) => process.stderr.write(chunk));
 
+  // Paseo cancels the reader when it closes a session, and cc-remote's stdout ends after that.
+  // Touching the controller once it's cancelled or closed throws, and a throw here would take
+  // down the whole plugin process, so every path checks `done` first.
+  let done = false;
   const readable = new ReadableStream<AcpStreamMessage>({
     start(controller) {
-      let done = false;
       let buffer = "";
       const finish = (error?: Error) => {
         if (done) return;
@@ -57,12 +60,15 @@ export function spawnAcp(connection: Connection): AcpStream {
         while ((newline = buffer.indexOf("\n")) >= 0) {
           const line = buffer.slice(0, newline).trim();
           buffer = buffer.slice(newline + 1);
-          if (!line) continue;
+          if (!line || done) continue;
+          let message: AcpStreamMessage;
           try {
-            controller.enqueue(JSON.parse(line) as AcpStreamMessage);
+            message = JSON.parse(line) as AcpStreamMessage;
           } catch {
             console.error(`cc-remote wrote a line that isn't JSON: ${line}`);
+            continue;
           }
+          controller.enqueue(message);
         }
       });
       child.stdout.on("end", () => finish());
@@ -75,9 +81,14 @@ export function spawnAcp(connection: Connection): AcpStream {
       );
     },
     cancel() {
+      done = true;
       child.kill();
     },
   });
+
+  // Writing after cc-remote exits fails with EPIPE; the write callback reports it, and without a
+  // listener the stream's own "error" event would crash the plugin process.
+  child.stdin.on("error", () => undefined);
 
   const writable = new WritableStream<AcpStreamMessage>({
     write(message) {
