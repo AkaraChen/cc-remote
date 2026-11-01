@@ -9,6 +9,7 @@ Remote:
   --host <host>                    ssh host where claude is installed and logged in
                                    (else $CC_REMOTE_HOST, else ~/.config/cc-remote/host)
   CC_REMOTE_SSH="ssh -p 2222"      ssh command to use, like rsync's RSYNC_RSH
+                                   (keepalives are added; an earlier -o here wins)
   cc-remote doctor                 check the connection and the remote claude version
 
 claude -p options:

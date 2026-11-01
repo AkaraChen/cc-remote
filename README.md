@@ -22,7 +22,9 @@ cc-remote doctor                           # checks ssh and the remote claude ve
 ```
 
 The host is anything `ssh` accepts. Ports, keys and jump hosts belong in `~/.ssh/config`.
-To use a different ssh command, set `CC_REMOTE_SSH`, like rsync's `RSYNC_RSH`:
+Each connection sends `ServerAliveInterval=15` and `ServerAliveCountMax=3`, so a dead link
+fails in about a minute instead of hanging. Put the same options earlier in `CC_REMOTE_SSH`
+to override them. To use a different ssh command, set `CC_REMOTE_SSH`, like rsync's `RSYNC_RSH`:
 
 ```sh
 export CC_REMOTE_SSH="ssh -p 2222 -i ~/.ssh/devbox"

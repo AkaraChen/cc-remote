@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { strip } from "../src/names";
 import { canUseTool, matches, parseRules } from "../src/permissions";
-import { quote, remoteCommand } from "../src/ssh";
+import { quote, remoteCommand, sshArgs } from "../src/ssh";
 
 describe("names", () => {
   test("strips the MCP prefix from whole tool names only", () => {
@@ -57,5 +57,36 @@ describe("ssh", () => {
     expect(cmd).toContain(`/.cc-remote/ws/'`);
     expect(cmd).toContain("/home/me/my project'");
     expect(cmd).toEndWith(`exec env 'A=1' claude '--model' 'it'\\''s'`);
+  });
+  test("adds server keepalives on the command line", () => {
+    const prev = process.env.CC_REMOTE_SSH;
+    delete process.env.CC_REMOTE_SSH;
+    try {
+      expect(sshArgs("box", "claude")).toEqual([
+        "ssh",
+        "-o",
+        "ServerAliveInterval=15",
+        "-o",
+        "ServerAliveCountMax=3",
+        "-T",
+        "box",
+        "claude",
+      ]);
+    } finally {
+      if (prev === undefined) delete process.env.CC_REMOTE_SSH;
+      else process.env.CC_REMOTE_SSH = prev;
+    }
+  });
+  test("lets an earlier keepalive in CC_REMOTE_SSH win", () => {
+    const prev = process.env.CC_REMOTE_SSH;
+    process.env.CC_REMOTE_SSH = "ssh -p 2222 -o ServerAliveInterval=5";
+    try {
+      const args = sshArgs("box", "true");
+      expect(args.indexOf("ServerAliveInterval=5")).toBeLessThan(args.indexOf("ServerAliveInterval=15"));
+      expect(args).toContain("ServerAliveCountMax=3");
+    } finally {
+      if (prev === undefined) delete process.env.CC_REMOTE_SSH;
+      else process.env.CC_REMOTE_SSH = prev;
+    }
   });
 });

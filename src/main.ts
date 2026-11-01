@@ -5,7 +5,7 @@ import { parse, USAGE, type Args } from "./args";
 import { PREFIX, REMOVED, LOCAL, strip } from "./names";
 import { canUseTool, denyHook, format, isLocal, parseRules } from "./permissions";
 import { environment } from "./prompt";
-import { REMOTE_PATH, rsh, spawner } from "./ssh";
+import { REMOTE_PATH, rsh, spawner, sshArgs } from "./ssh";
 import { killAll, server } from "./tools";
 import { abs, home } from "./tools/util";
 import { hasTerminal } from "./tty";
@@ -33,7 +33,7 @@ async function host(flag?: string): Promise<string> {
 async function doctor(target: string) {
   console.log(`cc-remote ${pkg.version} (agent sdk ${pkg.dependencies["@anthropic-ai/claude-agent-sdk"]})`);
   console.log(`host: ${target} via ${rsh().join(" ")}`);
-  const proc = Bun.spawn([...rsh(), "-T", target, `${REMOTE_PATH} claude --version`], { stdout: "pipe", stderr: "inherit", stdin: "ignore" });
+  const proc = Bun.spawn(sshArgs(target, `${REMOTE_PATH} claude --version`), { stdout: "pipe", stderr: "inherit", stdin: "ignore" });
   const out = (await new Response(proc.stdout).text()).trim();
   if ((await proc.exited) !== 0 || !out) fail(`could not run claude on ${target}`);
   const version = out.split(" ")[0]!;

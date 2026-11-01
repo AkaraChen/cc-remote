@@ -144,7 +144,9 @@ RemoteTrigger SendFeedback SendUserFile SendUserMessage ShareOnboardingGuide Sho
 
 **版本。** 客户端内嵌 SDK 0.3.x，远端 `claude` ≥ 2.1.248。从 `system/init.claude_code_version` 校验，低了报错。`cc-remote doctor` = `ssh host claude --version` + 工具表比对。
 
-**ssh。** `$CC_REMOTE_SSH -T host '<shell-quoted 命令>'`（默认 `ssh`，像 rsync 的 `RSYNC_RSH`）；
+**ssh。** `$CC_REMOTE_SSH -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -T host '<shell-quoted 命令>'`（默认 `ssh`，像 rsync 的 `RSYNC_RSH`）；
+命令行上的 `-o` 先于 `~/.ssh/config`，所以不用改配置。`CC_REMOTE_SSH` 里更早的同名 `-o` 优先。
+不用 `autossh`：它断线后会新开一条 ssh、再起一个 `claude`，而这条 stream-json 会话对不上。
 无 tty 所以 stdout 干净，密码提示走 `/dev/tty` 不受影响；远端 stderr 原样转发。
 SDK 给子进程加的环境变量（实测 `CLAUDE_CODE_SDK_READS_SESSION_STATE`）经 `env K=V` 显式带过去。
 
