@@ -1,0 +1,24 @@
+{
+  "name": "cc-remote",
+  "version": "0.1.0",
+  "description": "claude -p, with the model on a remote host and the tools on your machine",
+  "type": "module",
+  "bin": {
+    "cc-remote": "src/main.ts"
+  },
+  "scripts": {
+    "test": "bun test",
+    "build": "bun run build:linux-x64 && bun run build:linux-arm64 && bun run build:darwin-arm64",
+    "build:linux-x64": "bun build src/main.ts --compile --minify --target=bun-linux-x64 --outfile dist/cc-remote-linux-x64",
+    "build:linux-arm64": "bun build src/main.ts --compile --minify --target=bun-linux-arm64 --outfile dist/cc-remote-linux-arm64",
+    "build:darwin-arm64": "bun build src/main.ts --compile --minify --target=bun-darwin-arm64 --outfile dist/cc-remote-darwin-arm64"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.3.316",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.4",
+    "typescript": "^7.0.2"
+  }
+}

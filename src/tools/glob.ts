@@ -1,0 +1,35 @@
+import { tool } from "@anthropic-ai/claude-agent-sdk";
+import { stat } from "node:fs/promises";
+import { z } from "zod";
+import { abs, ok } from "./util";
+
+const LIMIT = 100;
+const SKIP = /(^|\/)(\.git|node_modules)\//;
+
+export const glob = tool(
+  "Glob",
+  `Fast file pattern matching on the user's local filesystem.
+
+- Supports glob patterns like "**/*.js" or "src/**/*.ts"
+- Returns matching absolute file paths, most recently modified first, at most ${LIMIT}
+- Skips .git and node_modules unless the pattern names them`,
+  {
+    pattern: z.string().describe("The glob pattern to match files against"),
+    path: z.string().optional().describe("The directory to search in. Defaults to the current working directory."),
+  },
+  async ({ pattern, path }) => {
+    const cwd = abs(path ?? ".");
+    const skip = !/\.git|node_modules/.test(pattern);
+    const files: string[] = [];
+    for await (const file of new Bun.Glob(pattern).scan({ cwd, dot: true, onlyFiles: true })) {
+      if (!skip || !SKIP.test(file)) files.push(`${cwd}/${file}`.replace(/\/+/g, "/"));
+    }
+    if (!files.length) return ok("No files found");
+
+    const dated = await Promise.all(files.map(async (f) => [f, (await stat(f).catch(() => null))?.mtimeMs ?? 0] as const));
+    dated.sort((a, b) => b[1] - a[1]);
+    const shown = dated.slice(0, LIMIT).map(([f]) => f).join("\n");
+    return ok(files.length > LIMIT ? `${shown}\n(Results are truncated. Consider using a more specific path or pattern.)` : shown);
+  },
+  { annotations: { readOnlyHint: true } },
+);
