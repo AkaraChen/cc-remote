@@ -1,5 +1,6 @@
 import type { HookCallbackMatcher, Options } from "@anthropic-ai/claude-agent-sdk";
 import { bridgeAll } from "./bridge";
+import { localMcpServers } from "./mcp";
 import { LOCAL, PREFIX, READS, REMOVED, widenMatcher } from "./names";
 import { environment } from "./prompt";
 import { mirror } from "./sessions";
@@ -30,21 +31,22 @@ function widenHooks(hooks: Options["hooks"]): Options["hooks"] {
 
 /**
  * claude-agent-acp builds the options of every session's query(); this moves the session to the
- * host. claude runs there over ssh, while its file and shell tools, and the MCP servers the ACP
- * client brought, run here in the session's directory.
+ * host. claude runs there over ssh, while its file and shell tools, and the MCP servers of the ACP
+ * client and of the local Claude Code config, run here in the session's directory.
  */
 export function remote(host: string) {
   return async (options: Options): Promise<Options> => {
     const cwd = options.cwd ?? process.cwd();
     // Extra directories are local paths; the host has none of them. They go in the prompt instead.
-    const env = await environment(cwd, options.additionalDirectories ?? []);
+    const [env, local] = await Promise.all([environment(cwd, options.additionalDirectories ?? []), localMcpServers(cwd)]);
     return {
       ...options,
       pathToClaudeCodeExecutable: "claude",
       spawnClaudeCodeProcess: spawner(host, cwd, { CLAUDE_CODE_DISABLE_CLAUDE_MDS: "1" }),
       additionalDirectories: [],
       systemPrompt: withEnvironment(options.systemPrompt, env),
-      mcpServers: { ...bridgeAll(options.mcpServers, cwd, options.abortController?.signal), cc: localTools(cwd) },
+      // The client's servers win over the config's: it chose them for this session.
+      mcpServers: { ...bridgeAll({ ...local, ...options.mcpServers }, cwd, options.abortController?.signal), cc: localTools(cwd) },
       toolAliases: { ...options.toolAliases, ...Object.fromEntries(LOCAL.map((t) => [t, PREFIX + t])) },
       disallowedTools: [...(options.disallowedTools ?? []), ...REMOVED],
       // claude asks before any MCP tool; it never asks before its own reads.

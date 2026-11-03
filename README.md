@@ -10,7 +10,7 @@ can use it: Zed, paseo, and others.
 | Runs on your machine | Runs on the server |
 |---|---|
 | Read, Write, Edit, NotebookEdit, Bash (PowerShell on Windows), Glob, Grep | The model, the system prompt, the session |
-| The MCP servers your ACP client brings | Web search, subagents, skills |
+| The MCP servers your ACP client brings, and those in your local Claude Code config | Web search, subagents, skills |
 | Your `CLAUDE.md` files, git status, environment | The server's own settings and MCP servers |
 
 The server only needs `claude`. Nothing else gets installed there, and your machine doesn't need
@@ -119,6 +119,17 @@ a local Claude Code would keep it. Your client can list, replay, load and fork s
 If you resume a session the server has never seen, such as a fork, cc-remote copies it to the
 server first. On the server, each local directory gets its own empty working folder at
 `~/.cc-remote/ws/<your hostname>/<local path>/`.
+
+**MCP servers.** Besides the servers your client passes, cc-remote starts the ones your local
+Claude Code would: user servers from `~/.claude.json`, the ones added for this directory, and the
+project's `.mcp.json` servers that you have approved (in `~/.claude/settings.json`,
+`.claude/settings.local.json`, or by approving them in a local `claude`). They run on your
+machine and reach claude the same way as your client's. When names clash, your client's server
+wins over your local config's, and either one wins over a server of the same name on the host.
+An http or sse server that needs OAuth offers an `authenticate` tool until you log in. Calling it
+opens the login page in your local browser, takes the redirect on `localhost`, and then the
+server's real tools appear. The tokens are kept in `~/.config/cc-remote/mcp-auth/`, separately
+from Claude Code's.
 
 **ssh.** By default all sessions share one connection (`ControlMaster`, kept open for 10 minutes).
 Every connection sends `ServerAliveInterval=15` and `ServerAliveCountMax=3`, so a dead link fails

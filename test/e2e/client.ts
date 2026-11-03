@@ -15,7 +15,7 @@ const root = `${import.meta.dir}/../..`;
 const agent = process.env.AGENT ? [process.env.AGENT] : ["bun", `${root}/src/main.ts`];
 const child = spawn(agent[0]!, [...agent.slice(1), "--host", "fakehost"], {
   stdio: ["pipe", "pipe", "inherit"],
-  env: { ...process.env, CC_REMOTE_SSH: `${import.meta.dir}/fakessh`, REAL_HOME: process.env.HOME },
+  env: { ...process.env, CC_REMOTE_SSH: `${import.meta.dir}/fakessh`, REAL_HOME: process.env.REAL_HOME ?? process.env.HOME },
 });
 let id = 0;
 const pending = new Map<number, (r: any) => void>();

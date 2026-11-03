@@ -48,7 +48,7 @@ new/load/resume/fork、退出计划模式后重建、v1/v2 协议，全部经过
 | 字段 | 处理 |
 |---|---|
 | `spawnClaudeCodeProcess` | `ssh host 'mkdir -p D && cd D && exec env … claude <args>'`，经 `proxy` 包装 |
-| `mcpServers` | 客户端给的 stdio/http/sse 全部桥接为本机 sdk server；加上本机工具 `cc`（按会话 cwd 创建） |
+| `mcpServers` | 本机 Claude Code 配置里的（`~/.claude.json` 的 user/local 作用域、已批准的 `.mcp.json`）加上客户端给的（同名时客户端优先；经 SDK 传入的又压过远端配置里的同名 server），stdio/http/sse 全部桥接为本机 sdk server；加上本机工具 `cc`（按会话 cwd 创建） |
 | `toolAliases` | `Bash → mcp__cc__Bash` 等，模型按内置名调用 |
 | `disallowedTools` | + 12 个碰本机 fs/shell 的内置工具（见 `names.ts` 的 `REMOVED`） |
 | `allowedTools` | + `mcp__cc__Read/Glob/Grep`：claude 对任何 MCP 工具都会询问，对自己的读工具不会 |
@@ -92,6 +92,14 @@ new/load/resume/fork、退出计划模式后重建、v1/v2 协议，全部经过
   死链约一分钟内失败而不是挂住。不用 `autossh`：它断线后会新开一条 ssh、再起一个 `claude`，而这条 stream-json 会话对不上。
   SDK 和 ACP 加给子进程的环境变量经 `env K=V` 带过去（`CLAUDE_CONFIG_DIR` 除外）。
 - **工具**：每个会话一份（`localTools(cwd)`），Bash 的 cwd 跨调用保持且按会话隔离；后台命令随 cc-remote 退出被清理。
+- **本机 MCP 配置**（`src/mcp.ts`）：按 claude 的规则合并 user < project（`.mcp.json`，从根到 cwd，近的优先）
+  < local（`projects[cwd]`），展开 `${VAR}` / `${VAR:-默认}`，去掉 `disabledMcpServers`。`.mcp.json`
+  的批准只认仓库控制不了的地方：用户 settings、`.claude/settings.local.json`、`~/.claude.json` 里该目录的记录。
+- **MCP OAuth**（`src/oauth.ts`，做法同 mcp-remote）：claude 自己的 OAuth 回调监听在服务器上，浏览器在本机，
+  所以桥接的 http/sse server 在本机登录。401 时该 server 只暴露一个 `authenticate` 工具；模型调用它时
+  打开本机浏览器、在 `http://localhost:<端口>/callback` 等回调（端口按 URL 固定，因为 redirect_uri 要注册），
+  拿到 code 换 token 后发 `tools/list_changed`，真正的工具随之出现。token 存在
+  `~/.config/cc-remote/mcp-auth/<url 哈希>.json`；之后刷新失败会退回 `authenticate`。
 - **服务器设置**：`settingSources` 由 claude-agent-acp 决定（user/project/local）。服务器上的 user 设置、skills、MCP 生效；
   project/local 指向空镜像目录。本机项目的 `.claude/` 目前不同步到服务器。
 
@@ -106,4 +114,4 @@ new/load/resume/fork、退出计划模式后重建、v1/v2 协议，全部经过
 
 `bun test`：工具、改写规则、Bash 规则、ssh 引号。端到端用假的 `CC_REMOTE_SSH`（忽略 host，在本机以另一个 HOME
 执行远端命令）加一个最小 ACP 客户端，验证过：读/编辑/Bash/客户端 stdio MCP、权限请求与 acceptEdits、
-Bash 前缀放行、会话镜像、list/load/resume、远端缺会话时上传、编译后的二进制。
+Bash 前缀放行、会话镜像、list/load/resume、远端缺会话时上传、编译后的二进制、本机 `~/.claude.json` 里的 MCP。OAuth 用 `test/local.test.ts` 里的假授权服务器验证。
