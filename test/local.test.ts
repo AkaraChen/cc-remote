@@ -2,9 +2,15 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
+import { DemoInMemoryAuthProvider } from "@modelcontextprotocol/sdk/examples/server/demoInMemoryOAuthProvider.js";
+import { requireBearerAuth } from "@modelcontextprotocol/sdk/server/auth/middleware/bearerAuth.js";
+import { getOAuthProtectedResourceMetadataUrl, mcpAuthRouter } from "@modelcontextprotocol/sdk/server/auth/router.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { ToolListChangedNotificationSchema } from "@modelcontextprotocol/sdk/types.js";
+import express from "express";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { bridgeAll } from "../src/bridge";
@@ -48,51 +54,32 @@ describe("localMcpServers", () => {
   });
 });
 
-/** A remote MCP server behind OAuth, with an authorization server that approves at once. */
-function oauthServer() {
-  const tokens = new Set<string>();
-  const server: ReturnType<typeof Bun.serve> = Bun.serve({
-    port: 0,
-    async fetch(req): Promise<Response> {
-      const url = new URL(req.url);
-      const base = `http://localhost:${server.port}`;
-      if (url.pathname === "/.well-known/oauth-protected-resource/mcp" || url.pathname === "/.well-known/oauth-protected-resource") {
-        return Response.json({ resource: `${base}/mcp`, authorization_servers: [base] });
-      }
-      if (url.pathname === "/.well-known/oauth-authorization-server") {
-        return Response.json({
-          issuer: base, authorization_endpoint: `${base}/authorize`, token_endpoint: `${base}/token`, registration_endpoint: `${base}/register`,
-          response_types_supported: ["code"], code_challenge_methods_supported: ["S256"],
-        });
-      }
-      if (url.pathname === "/register") return Response.json({ ...(await req.json()), client_id: "c1" }, { status: 201 });
-      if (url.pathname === "/authorize") {
-        const back = new URL(url.searchParams.get("redirect_uri")!);
-        back.searchParams.set("code", "code1");
-        back.searchParams.set("state", url.searchParams.get("state")!);
-        return Response.redirect(back.href, 302);
-      }
-      if (url.pathname === "/token") {
-        const token = crypto.randomUUID();
-        tokens.add(token);
-        return Response.json({ access_token: token, token_type: "Bearer", expires_in: 3600 });
-      }
-      if (!tokens.has(req.headers.get("authorization")?.replace(/^Bearer /, "") ?? "")) {
-        return new Response("unauthorized", { status: 401, headers: { "www-authenticate": `Bearer resource_metadata="${base}/.well-known/oauth-protected-resource/mcp"` } });
-      }
-      const mcp = new McpServer({ name: "remote", version: "1" });
-      mcp.registerTool("hello", { description: "says hi" }, async () => ({ content: [{ type: "text", text: "hi" }] }));
-      const transport = new WebStandardStreamableHTTPServerTransport({ enableJsonResponse: true });
-      await mcp.connect(transport);
-      return transport.handleRequest(req);
-    },
+/**
+ * A remote MCP server behind OAuth, built from the SDK's own server side: its authorization
+ * server router with the demo provider, which approves at once, and its bearer-token check.
+ */
+async function oauthServer() {
+  const app = express();
+  const http = createServer(app);
+  await new Promise<void>((done) => http.listen(0, "localhost", done));
+  const port = (http.address() as AddressInfo).port;
+  const base = new URL(`http://localhost:${port}`);
+  const mcpUrl = new URL("/mcp", base);
+  const provider = new DemoInMemoryAuthProvider();
+  app.use(mcpAuthRouter({ provider, issuerUrl: base, resourceServerUrl: mcpUrl }));
+  app.post("/mcp", express.json(), requireBearerAuth({ verifier: provider, resourceMetadataUrl: getOAuthProtectedResourceMetadataUrl(mcpUrl) }), async (req, res) => {
+    const mcp = new McpServer({ name: "remote", version: "1" });
+    mcp.registerTool("hello", { description: "says hi" }, async () => ({ content: [{ type: "text", text: "hi" }] }));
+    const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
+    await mcp.connect(transport);
+    await transport.handleRequest(req, res, req.body);
   });
-  return server;
+  return { port, stop: () => http.close() };
 }
 
 describe("bridged OAuth", () => {
   test("offers authenticate, logs in through the browser, then the real tools", async () => {
-    const remote = oauthServer();
+    const remote = await oauthServer();
     const opened: string[] = [];
     const { open, authDir } = machine;
     machine.authDir = join(dir, "mcp-auth");
@@ -121,7 +108,7 @@ describe("bridged OAuth", () => {
       await client.close();
     } finally {
       Object.assign(machine, { open, authDir });
-      remote.stop(true);
+      remote.stop();
     }
   }, 15_000);
 });
