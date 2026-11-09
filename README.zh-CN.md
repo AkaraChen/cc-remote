@@ -7,7 +7,7 @@
 cc-remote 让 Claude Code 跑在一台你能 ssh 上去的服务器上，而它调用的每个工具都在你自己的机器上执行。
 模型、登录状态和订阅都留在服务器；代码、shell、工具链和编辑器都留在你身边。
 
-它是一个 [ACP](https://agentclientprotocol.com) agent，可以直接接入 Zed、paseo 以及任何 ACP 客户端。
+它是一个 [ACP](https://agentclientprotocol.com) agent，可以直接接入终端里的 [acpc](https://github.com/AkaraChen/acpc)、Zed、paseo 以及任何 ACP 客户端。
 在编辑器看来，它就是 Claude Code。
 
 ```
@@ -89,6 +89,18 @@ export CC_REMOTE_SSH="ssh -p 2222 -i ~/.ssh/devbox"
 
 装好 cc-remote 后，任何支持 ACP 的客户端都能用。添加一个命令为 `cc-remote --host devbox` 的 agent
 （如果上面已经写了 host 文件，直接用 `cc-remote` 也行）。
+
+**acpc**，在终端里使用。[acpc](https://github.com/AkaraChen/acpc) 为任何 ACP agent 提供 Codex 的终端界面。
+安装它，把 cc-remote 添加为 agent，然后开始会话：
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/AkaraChen/acpc/main/install.sh | sh
+acpc add --slug devbox --name "Claude (devbox)" cc-remote --host devbox
+acpc -a devbox
+```
+
+给 `acpc add` 加上 `--default`，直接运行 `acpc` 时就会用它。在 acpc 里，`/model` 和 Shift+Tab
+可以切换 Claude 的模型和模式，`/resume` 重新打开会话，`/agent` 可以把对话在 cc-remote 和其他 agent 之间转移。
 
 **Zed**，在 `settings.json` 中：
 

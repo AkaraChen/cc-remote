@@ -8,8 +8,8 @@ cc-remote runs Claude Code on a server you can reach over ssh, and runs every to
 on your own machine. The model, your login and your subscription stay on the server. Your
 code, your shell, your toolchain and your editor stay with you.
 
-It's an [ACP](https://agentclientprotocol.com) agent, so it plugs straight into Zed, paseo and
-any other ACP client. To your editor it looks exactly like Claude Code.
+It's an [ACP](https://agentclientprotocol.com) agent, so it plugs straight into
+[acpc](https://github.com/AkaraChen/acpc) in the terminal, Zed, paseo and any other ACP client. To your editor it looks exactly like Claude Code.
 
 ```
   your machine                                   server
@@ -98,6 +98,19 @@ If the server isn't logged in yet, run `cc-remote --cli auth login`.
 
 Once cc-remote is installed, it works with any client that speaks ACP. Add an agent whose command
 is `cc-remote --host devbox` (or just `cc-remote`, if you wrote the host file above).
+
+**acpc**, in the terminal. [acpc](https://github.com/AkaraChen/acpc) gives any ACP agent the
+Codex terminal UI. Install it, add cc-remote as an agent, and start a session:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/AkaraChen/acpc/main/install.sh | sh
+acpc add --slug devbox --name "Claude (devbox)" cc-remote --host devbox
+acpc -a devbox
+```
+
+Pass `--default` to `acpc add` to make it the agent plain `acpc` starts. In acpc, `/model` and
+Shift+Tab switch Claude's models and modes, `/resume` reopens sessions, and `/agent` can move a
+conversation between cc-remote and your other agents.
 
 **Zed**, in `settings.json`:
 
