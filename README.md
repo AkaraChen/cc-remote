@@ -31,7 +31,7 @@ It's an [ACP](https://agentclientprotocol.com) agent, so it plugs straight into
   dependencies, your git config and your build tools.
 - **Your local MCP servers come along.** The ones your editor passes and the ones in your local
   Claude Code config run on your machine, OAuth logins included.
-- **Nothing to set up on the server.** No daemon, no port, no agent to install. If `ssh devbox
+- **Nothing to set up on the server.** No daemon, no port, no agent to install. If `ssh <your-server>
   claude --version` works, cc-remote works.
 - **One binary locally, on macOS, Linux and Windows.** No `claude` install and no Claude login
   on your machine.
@@ -51,9 +51,12 @@ It's an [ACP](https://agentclientprotocol.com) agent, so it plugs straight into
 
 ## Requirements
 
+Throughout this README, `<your-server>` stands for your server: replace it with anything `ssh`
+accepts, such as a hostname, `user@host`, or a `Host` alias from `~/.ssh/config`.
+
 Before you start, have these two in place:
 
-- **ssh to the server works.** `ssh devbox` logs you in without a password prompt (use a key, and
+- **ssh to the server works.** `ssh <your-server>` logs you in without a password prompt (use a key, and
   put ports, users and jump hosts in `~/.ssh/config`).
 - **`claude` on the server is logged in.** Claude Code 2.1.248 or later, with a POSIX login shell.
   Run `claude` there once and log in, or use `cc-remote --cli auth login` after installing.
@@ -78,7 +81,7 @@ every platform at once (linux-x64, linux-arm64, darwin-arm64, windows-x64, windo
 Tell it which host to use, then check the connection:
 
 ```sh
-mkdir -p ~/.config/cc-remote && echo devbox > ~/.config/cc-remote/host
+mkdir -p ~/.config/cc-remote && echo <your-server> > ~/.config/cc-remote/host
 cc-remote doctor
 ```
 
@@ -89,7 +92,7 @@ go in `~/.ssh/config`.
 If you need a different ssh command, set `CC_REMOTE_SSH`. It works like rsync's `RSYNC_RSH`:
 
 ```sh
-export CC_REMOTE_SSH="ssh -p 2222 -i ~/.ssh/devbox"
+export CC_REMOTE_SSH="ssh -p 2222 -i ~/.ssh/id_ed25519"
 ```
 
 If the server isn't logged in yet, run `cc-remote --cli auth login`.
@@ -97,15 +100,15 @@ If the server isn't logged in yet, run `cc-remote --cli auth login`.
 ## Use
 
 Once cc-remote is installed, it works with any client that speaks ACP. Add an agent whose command
-is `cc-remote --host devbox` (or just `cc-remote`, if you wrote the host file above).
+is `cc-remote --host <your-server>` (or just `cc-remote`, if you wrote the host file above).
 
 **acpc**, in the terminal. [acpc](https://github.com/AkaraChen/acpc) gives any ACP agent the
 Codex terminal UI. Install it, add cc-remote as an agent, and start a session:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/AkaraChen/acpc/main/install.sh | sh
-acpc add --slug devbox --name "Claude (devbox)" cc-remote --host devbox
-acpc -a devbox
+acpc add --slug cc-remote --name "Claude (remote)" cc-remote --host <your-server>
+acpc -a cc-remote
 ```
 
 Pass `--default` to `acpc add` to make it the agent plain `acpc` starts. In acpc, `/model` and
@@ -116,17 +119,17 @@ conversation between cc-remote and your other agents.
 
 ```json
 "agent_servers": {
-  "Claude (devbox)": { "command": "cc-remote", "args": ["--host", "devbox"] }
+  "Claude (remote)": { "command": "cc-remote", "args": ["--host", "<your-server>"] }
 }
 ```
 
 **paseo**, in `~/.paseo/config.json` under `agents.providers`:
 
 ```json
-"claude-devbox": {
+"claude-remote": {
   "extends": "acp",
-  "label": "Claude (devbox)",
-  "command": ["cc-remote", "--host", "devbox"]
+  "label": "Claude (remote)",
+  "command": ["cc-remote", "--host", "<your-server>"]
 }
 ```
 
@@ -212,7 +215,7 @@ for each session. See [`PLAN.md`](PLAN.md) for the full design.
 ```sh
 bun install
 bun test
-bun src/main.ts --host devbox     # speaks ACP on stdio
+bun src/main.ts --host <your-server>     # speaks ACP on stdio
 bun run compile                   # dist/cc-remote, for this machine
 bun run build                     # dist/cc-remote-{linux-x64,linux-arm64,darwin-arm64,windows-x64,windows-arm64}
 ```

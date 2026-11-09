@@ -30,7 +30,7 @@ cc-remote 让 Claude Code 跑在一台你能 ssh 上去的服务器上，而它�
 - **本地的 MCP 服务器照样能用。** 编辑器传来的、以及本地 Claude Code 配置里的 MCP 服务器都在本机运行，
   需要 OAuth 登录的也支持。
 - **服务器上什么都不用装。** 没有守护进程，不开端口，不装 agent。
-  只要 `ssh devbox claude --version` 能跑通，cc-remote 就能用。
+  只要 `ssh <your-server> claude --version` 能跑通，cc-remote 就能用。
 - **本机只需一个二进制，支持 macOS、Linux 和 Windows。** 本机不需要安装 `claude`，也不需要登录 Claude。
 - **就是原汁原味的 Claude Code。** cc-remote 就是 Claude Code 的 ACP 适配器
   [claude-agent-acp](https://github.com/agentclientprotocol/claude-agent-acp)，只改了一处：
@@ -46,9 +46,12 @@ cc-remote 让 Claude Code 跑在一台你能 ssh 上去的服务器上，而它�
 
 ## 前置条件
 
+本文中的 `<your-server>` 指你的服务器，请替换成任何 `ssh` 接受的写法，比如主机名、`user@host`，
+或 `~/.ssh/config` 里的 `Host` 别名。
+
 开始之前，先准备好这两样：
 
-- **能 ssh 到服务器。** `ssh devbox` 能免密登录（用密钥，端口、用户名和跳板机写进 `~/.ssh/config`）。
+- **能 ssh 到服务器。** `ssh <your-server>` 能免密登录（用密钥，端口、用户名和跳板机写进 `~/.ssh/config`）。
 - **服务器上的 `claude` 已登录。** Claude Code 2.1.248 或更新版本，登录 shell 为 POSIX shell。
   在服务器上运行一次 `claude` 并登录，或者装好 cc-remote 后用 `cc-remote --cli auth login`。
 
@@ -70,7 +73,7 @@ bun link           # 把 cc-remote 加到 PATH，位于 ~/.bun/bin
 指定要用的主机，然后检查连接：
 
 ```sh
-mkdir -p ~/.config/cc-remote && echo devbox > ~/.config/cc-remote/host
+mkdir -p ~/.config/cc-remote && echo <your-server> > ~/.config/cc-remote/host
 cc-remote doctor
 ```
 
@@ -80,14 +83,14 @@ cc-remote 按以下顺序查找主机：`--host`，然后 `$CC_REMOTE_HOST`，�
 如果需要换一个 ssh 命令，设置 `CC_REMOTE_SSH`，用法类似 rsync 的 `RSYNC_RSH`：
 
 ```sh
-export CC_REMOTE_SSH="ssh -p 2222 -i ~/.ssh/devbox"
+export CC_REMOTE_SSH="ssh -p 2222 -i ~/.ssh/id_ed25519"
 ```
 
 如果服务器还没登录，运行 `cc-remote --cli auth login`。
 
 ## 使用
 
-装好 cc-remote 后，任何支持 ACP 的客户端都能用。添加一个命令为 `cc-remote --host devbox` 的 agent
+装好 cc-remote 后，任何支持 ACP 的客户端都能用。添加一个命令为 `cc-remote --host <your-server>` 的 agent
 （如果上面已经写了 host 文件，直接用 `cc-remote` 也行）。
 
 **acpc**，在终端里使用。[acpc](https://github.com/AkaraChen/acpc) 为任何 ACP agent 提供 Codex 的终端界面。
@@ -95,8 +98,8 @@ export CC_REMOTE_SSH="ssh -p 2222 -i ~/.ssh/devbox"
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/AkaraChen/acpc/main/install.sh | sh
-acpc add --slug devbox --name "Claude (devbox)" cc-remote --host devbox
-acpc -a devbox
+acpc add --slug cc-remote --name "Claude (remote)" cc-remote --host <your-server>
+acpc -a cc-remote
 ```
 
 给 `acpc add` 加上 `--default`，直接运行 `acpc` 时就会用它。在 acpc 里，`/model` 和 Shift+Tab
@@ -106,17 +109,17 @@ acpc -a devbox
 
 ```json
 "agent_servers": {
-  "Claude (devbox)": { "command": "cc-remote", "args": ["--host", "devbox"] }
+  "Claude (remote)": { "command": "cc-remote", "args": ["--host", "<your-server>"] }
 }
 ```
 
 **paseo**，在 `~/.paseo/config.json` 的 `agents.providers` 下：
 
 ```json
-"claude-devbox": {
+"claude-remote": {
   "extends": "acp",
-  "label": "Claude (devbox)",
-  "command": ["cc-remote", "--host", "devbox"]
+  "label": "Claude (remote)",
+  "command": ["cc-remote", "--host", "<your-server>"]
 }
 ```
 
@@ -192,7 +195,7 @@ claude-agent-acp 只打了一处补丁（`patches/`）：一个改写每个会�
 ```sh
 bun install
 bun test
-bun src/main.ts --host devbox     # 在 stdio 上提供 ACP
+bun src/main.ts --host <your-server>     # 在 stdio 上提供 ACP
 bun run compile                   # dist/cc-remote，当前机器
 bun run build                     # dist/cc-remote-{linux-x64,linux-arm64,darwin-arm64,windows-x64,windows-arm64}
 ```
