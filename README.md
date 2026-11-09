@@ -1,24 +1,53 @@
 # cc-remote
 
-Claude Code as an [ACP](https://agentclientprotocol.com) agent. The model runs on a remote host,
-and the tools run on your machine.
+English | [简体中文](README.zh-CN.md)
 
-You keep `claude` installed and logged in on one server. cc-remote reaches it over plain ssh and
-runs every file read, edit and shell command locally, in the session's directory. Any ACP client
-can use it: Zed, paseo, and others.
+**Use Claude Code on your laptop without installing or logging into it there.**
+
+cc-remote runs Claude Code on a server you can reach over ssh, and runs every tool it calls
+on your own machine. The model, your login and your subscription stay on the server. Your
+code, your shell, your toolchain and your editor stay with you.
+
+It's an [ACP](https://agentclientprotocol.com) agent, so it plugs straight into Zed, paseo and
+any other ACP client. To your editor it looks exactly like Claude Code.
+
+```
+  your machine                                   server
+ ┌───────────────────────────────┐   ssh    ┌─────────────────────────┐
+ │ Zed / paseo / any ACP client  │          │ claude (logged in)      │
+ │        ⇅                      │ ───────► │  model, prompts,        │
+ │ cc-remote                     │ ◄─────── │  web search, subagents, │
+ │  Read · Write · Edit · Bash   │          │  skills, its own MCP    │
+ │  Glob · Grep · your MCP       │          │                         │
+ └───────────────────────────────┘          └─────────────────────────┘
+```
+
+## Why
+
+- **Your Claude login lives somewhere else.** A dev box, a work server, a machine in a
+  region where Claude is available. Log in once there and use it from every computer you own.
+- **Your code stays local.** Unlike ssh-ing into the server and running `claude` there, the
+  files being edited and the commands being run are the ones on your machine, with your
+  dependencies, your git config and your build tools.
+- **Your local MCP servers come along.** The ones your editor passes and the ones in your local
+  Claude Code config run on your machine, OAuth logins included.
+- **Nothing to set up on the server.** No daemon, no port, no agent to install. If `ssh devbox
+  claude --version` works, cc-remote works.
+- **One binary locally, on macOS, Linux and Windows.** No `claude` install and no Claude login
+  on your machine.
+- **It's real Claude Code.** cc-remote is
+  [claude-agent-acp](https://github.com/agentclientprotocol/claude-agent-acp), the ACP adapter
+  for Claude Code, with one change: the `claude` it starts runs on the server. Sessions,
+  permission prompts, modes, models, forks and diffs all work the way they do in
+  claude-agent-acp.
+
+## What runs where
 
 | Runs on your machine | Runs on the server |
 |---|---|
 | Read, Write, Edit, NotebookEdit, Bash (PowerShell on Windows), Glob, Grep | The model, the system prompt, the session |
 | The MCP servers your ACP client brings, and those in your local Claude Code config | Web search, subagents, skills |
 | Your `CLAUDE.md` files, git status, environment | The server's own settings and MCP servers |
-
-The server only needs `claude`. Nothing else gets installed there, and your machine doesn't need
-`claude` at all.
-
-cc-remote is [claude-agent-acp](https://github.com/agentclientprotocol/claude-agent-acp) with one
-change: the `claude` it starts runs on the server. Sessions, permission prompts, modes, models,
-forks and diffs all work the way they do in claude-agent-acp.
 
 ## Requirements
 
