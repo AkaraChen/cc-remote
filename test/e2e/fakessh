@@ -6,5 +6,33 @@ while [ $# -gt 1 ]; do
   case "$1" in -o|-p|-i) shift 2;; -*) shift;; *) shift; break;; esac
 done
 export HOME="${FAKE_HOST_HOME:-/tmp/cc-remote-fake-host}" CLAUDE_CONFIG_DIR="${CLAUDE_CONFIG_DIR:-$REAL_HOME/.claude}"
-mkdir -p "$HOME/.local/bin" && ln -sf "$(PATH="$REAL_HOME/.local/bin:$PATH" command -v claude)" "$HOME/.local/bin/claude"
+
+# The daemon half of cc-remote, where 'cc-remote daemon install' would have left it. It is this
+# checkout, run through the same bun, so the daemon under test is the real one.
+here="$(cd "$(dirname "$0")/../.." && pwd)"
+mkdir -p "$HOME/.local/bin"
+printf '#!/bin/sh\nexec "%s" "%s/src/main.ts" daemon "$@"\n' "$(command -v bun)" "$here" > "$HOME/.local/bin/cc-remoted"
+chmod +x "$HOME/.local/bin/cc-remoted"
+
+# FAKE_CLAUDE stands in for claude itself, for the runs that need no login.
+if [ -n "$FAKE_CLAUDE" ]; then
+  ln -sf "$FAKE_CLAUDE" "$HOME/.local/bin/claude"
+else
+  ln -sf "$(PATH="$REAL_HOME/.local/bin:$PATH" command -v claude)" "$HOME/.local/bin/claude"
+fi
+
+# FAKE_DROP names a file holding a count: that many attach connections die a moment in, which is
+# what a flapping network looks like from this side.
+case "$1" in
+  *attach*)
+    if [ -n "$FAKE_DROP" ] && [ -f "$FAKE_DROP" ]; then
+      left="$(cat "$FAKE_DROP")"
+      if [ "$left" -gt 0 ]; then
+        echo $((left - 1)) > "$FAKE_DROP"
+        ( sleep 0.4; kill -9 $$ ) &
+      fi
+    fi
+    ;;
+esac
+
 exec sh -c "$1"

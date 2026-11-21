@@ -29,8 +29,9 @@ cc-remote 让 Claude Code 跑在一台你能 ssh 上去的服务器上，而它�
   用的是你本机的依赖、git 配置和构建工具。
 - **本地的 MCP 服务器照样能用。** 编辑器传来的、以及本地 Claude Code 配置里的 MCP 服务器都在本机运行，
   需要 OAuth 登录的也支持。
-- **服务器上什么都不用装。** 没有守护进程，不开端口，不装 agent。
+- **服务器上什么都不用装。** 不开端口，不要令牌，不装 agent。
   只要 `ssh <your-server> claude --version` 能跑通，cc-remote 就能用。
+  可选的 daemon（同一个二进制）能让会话在断线后继续活着（[见下文](#断线之后继续可选)）。
 - **本机只需一个二进制，支持 macOS、Linux 和 Windows。** 本机不需要安装 `claude`，也不需要登录 Claude。
 - **就是原汁原味的 Claude Code。** cc-remote 就是 Claude Code 的 ACP 适配器
   [claude-agent-acp](https://github.com/agentclientprotocol/claude-agent-acp)，只改了一处：
@@ -135,10 +136,53 @@ paseo plugin install github:AkaraChen/cc-remote:paseo-plugin
 
 ```
 cc-remote [--host <host>]                  在 stdio 上提供 ACP（客户端运行的就是这个）
-cc-remote [--host <host>] doctor           检查 ssh 和远端 claude 的版本
+cc-remote [--host <host>] doctor           检查 ssh、远端 claude 的版本和 daemon
 cc-remote [--host <host>] --cli <args...>  在服务器上运行 `claude <args...>`
+cc-remote daemon <install|status|logs|kill|uninstall>
+                                           可选 daemon 的服务端部分（在服务器上运行）
 cc-remote --version | --help
 ```
+
+## 断线之后继续（可选）
+
+默认情况下 `claude` 进程和启动它的那条 ssh 连接同生共死：合盖、换网络、sshd 重启，这一轮就没了。
+在服务器上装可选的 daemon 之后，claude 归 daemon 所有。ssh 只剩下传输：连接回来时，字节流从断掉的
+那个字节接上。
+
+daemon 就是同一个 cc-remote 二进制，跑在服务器上。在那里装一次（服务器上需要有一份 cc-remote：
+`git clone`、`bun install`、`bun link`）：
+
+```sh
+cc-remote daemon install     # 写入 ~/.local/bin/cc-remoted，并装一个 systemd --user 服务
+cc-remote daemon status
+```
+
+服务器上没有用户级 systemd 时，`daemon install` 会让 daemon 以脱离终端的方式在后台运行，
+输出在 `~/.cc-remote/daemon.log`；第一次需要它的 ssh 也会自己把它拉起来。没装 daemon 的服务器行为
+和以前完全一样：cc-remote 每次运行问一次 `cc-remoted version`，只有答得上才走 daemon。
+
+| 发生了什么 | 没有 daemon | 有 daemon |
+|---|---|---|
+| Wi-Fi 切换、合盖、sshd 重启 | claude 退出，这一轮作废，要 `/resume` | claude 照跑；客户端退避重连，界面只是卡一下 |
+| 客户端彻底不回来了 | claude 跟着退出 | claude 在服务器上留着，直到 linger（默认 30 分钟）到期 |
+
+```
+cc-remote daemon install                 用 systemd --user；没有就以脱离终端的方式运行
+cc-remote daemon status                  实例、谁附着着、各自写了多少字节
+cc-remote daemon logs [-f] [<会话>]      daemon 自己的日志，或某个会话的 spool
+cc-remote daemon kill <会话>             结束一个会话
+cc-remote daemon uninstall               停掉它，删掉 install 写的东西
+```
+
+服务器上 `~/.cc-remote/spool/<会话>.log` 保存 claude 写出的字节，`~/.cc-remote/run/daemon.sock`
+（权限 0600）是 daemon 监听的地方。每个 spool 默认上限 64 MiB（`--spool`），超过之后最旧的字节被丢弃，
+向它索要这些字节的客户端会收到「gone」，于是干净收尾，你从 transcript 继续——transcript 永远是真相。
+
+`CC_REMOTE_DAEMON=off` 完全不用 daemon。`CC_REMOTE_STEAL=1` 从另一个附着着它的客户端手里抢过来。
+
+传输只有 ssh：不开端口、不要令牌、不用 TLS、没有自定义帧。一行前言（要接的会话和续传字节偏移，
+或者要启动的 claude 命令），一行回执，之后两个方向都是 claude 自己的字节。
+鉴权就是 ssh 的密钥、agent 和 known_hosts，顺序就是 ssh 的字节流。
 
 ## 行为
 
@@ -187,8 +231,11 @@ cc-remote 通过 `ssh -T` 启动 `claude`，于是同一条数据流就跨过了
 `claude` 通过 SDK 的工具通道调用它们，就像调用任何进程内 MCP 工具一样。客户端的 MCP 服务器也走同一通道。
 数据流上的一个代理会把工具名改回内置名，这样客户端能照常渲染 diff 和终端；它还会把服务器上的路径映射回本地路径。
 
+服务器上装了 daemon 时，`ssh -T <host> cc-remoted attach --stdio` 取代了 `ssh -T <host> claude`。
+claude 是 daemon 的子进程，它的 stdout 无论有没有人在听都会复制进 spool 文件，每条 ssh 连接从某个字节
+偏移回放 spool 再转入实时流。正是这次复制让 claude 在链路断开时不会阻塞在自己的 write 上。
+
 claude-agent-acp 只打了一处补丁（`patches/`）：一个改写每个会话 `query()` 选项的钩子。
-完整设计见 [`PLAN.md`](PLAN.md)。
 
 ## 开发
 
@@ -201,4 +248,5 @@ bun run build                     # dist/cc-remote-{linux-x64,linux-arm64,darwin
 ```
 
 `test/e2e/` 里有一个最小的 ACP 客户端和一个假的 ssh，它会在本机用独立的 `HOME` 运行"远端"那一侧。
-用法见 `test/e2e/client.ts` 的文件头。
+用法见 `test/e2e/client.ts` 的文件头。`bun test/e2e/daemon.ts` 用同样的办法跑 daemon 的端到端：
+一个假 claude、一条断掉的链路、重连、续传偏移和 gone，不需要安装 claude，也不需要登录。

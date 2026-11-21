@@ -31,8 +31,9 @@ It's an [ACP](https://agentclientprotocol.com) agent, so it plugs straight into
   dependencies, your git config and your build tools.
 - **Your local MCP servers come along.** The ones your editor passes and the ones in your local
   Claude Code config run on your machine, OAuth logins included.
-- **Nothing to set up on the server.** No daemon, no port, no agent to install. If `ssh <your-server>
-  claude --version` works, cc-remote works.
+- **Nothing to set up on the server.** No port, no token, no agent to install. If `ssh <your-server>
+  claude --version` works, cc-remote works. An optional daemon — the same binary — keeps a session
+  alive across a dropped link ([below](#survive-a-dropped-link-optional)).
 - **One binary locally, on macOS, Linux and Windows.** No `claude` install and no Claude login
   on your machine.
 - **It's real Claude Code.** cc-remote is
@@ -146,10 +147,58 @@ paseo plugin install github:AkaraChen/cc-remote:paseo-plugin
 
 ```
 cc-remote [--host <host>]                  speak ACP on stdio (what your client runs)
-cc-remote [--host <host>] doctor           check ssh and the remote claude version
+cc-remote [--host <host>] doctor           check ssh, the remote claude version and the daemon
 cc-remote [--host <host>] --cli <args...>  run `claude <args...>` on the server
+cc-remote daemon <install|status|logs|kill|uninstall>
+                                           the host's half of the optional daemon (run it there)
 cc-remote --version | --help
 ```
+
+## Survive a dropped link (optional)
+
+By default the `claude` process lives and dies with the ssh connection that started it: close the
+lid, change networks, restart sshd, and the turn is gone. Install the optional daemon on the server
+and claude belongs to it instead. ssh is then only the wire: when it comes back, the stream resumes
+on the byte where it stopped.
+
+The daemon is the same cc-remote binary, running on the server. Install it there, once, from a
+cc-remote checkout on the server (`git clone`, `bun install`, `bun link`):
+
+```sh
+cc-remote daemon install     # ~/.local/bin/cc-remoted, plus a systemd --user service
+cc-remote daemon status
+```
+
+Where the server has no user systemd, `daemon install` leaves the daemon running detached instead,
+with its output in `~/.cc-remote/daemon.log`, and the daemon starts itself on the first ssh that
+needs it. A server without it behaves exactly as before: cc-remote asks `cc-remoted version` once
+per run and only goes through the daemon where that answers.
+
+| What happens | Without the daemon | With it |
+|---|---|---|
+| Wi-Fi drops, lid closed, sshd restarted | claude exits, the turn is lost, you `/resume` | claude keeps running; the client reconnects with backoff and the reply just pauses |
+| The client goes away for good | claude exits with it | claude is left running for the linger (30 minutes), then ends |
+
+```
+cc-remote daemon install                 systemd --user, or detached without it
+cc-remote daemon status                  instances, who is attached, how much they have written
+cc-remote daemon logs [-f] [<session>]   the daemon's log, or one session's spool
+cc-remote daemon kill <session>          end one session
+cc-remote daemon uninstall               stop it and remove what install wrote
+```
+
+On the server, `~/.cc-remote/spool/<session>.log` holds the bytes claude wrote and
+`~/.cc-remote/run/daemon.sock` (mode 0600) is where the daemon listens. A spool is capped at
+64 MiB (`--spool`); past that the oldest bytes go, and a client that asks for them is told the
+session is gone, so it ends cleanly and you resume from the transcript — which is the truth, always.
+
+`CC_REMOTE_DAEMON=off` never uses the daemon. `CC_REMOTE_STEAL=1` takes a session over from
+another client attached to it.
+
+The transport is ssh and nothing else: no port, no token, no TLS, no framing. One line of preamble
+(the session to attach to and the byte offset to resume at, or the claude command to start), one
+line of answer, then claude's own bytes both ways. ssh's keys, agent and known_hosts are the
+authentication; ssh's byte stream is the ordering.
 
 ## Behavior
 
@@ -207,8 +256,13 @@ channel, the same way it calls any in-process MCP tool. Your client's MCP server
 channel. A proxy on the stream renames the tools back to their built-in names, so your client
 renders diffs and terminals as usual. It also maps the server's paths to your local ones.
 
+With the daemon installed on the server, `ssh -T <host> cc-remoted attach --stdio` takes the place
+of `ssh -T <host> claude`. claude is the daemon's child, its stdout is copied into a spool file
+whether or not anyone is reading, and each ssh connection replays that spool from a byte offset and
+then goes live. That copy is what keeps claude from blocking on a write while the link is down.
+
 claude-agent-acp is patched in one place (`patches/`): a hook that rewrites the `query()` options
-for each session. See [`PLAN.md`](PLAN.md) for the full design.
+for each session.
 
 ## Develop
 
@@ -221,4 +275,6 @@ bun run build                     # dist/cc-remote-{linux-x64,linux-arm64,darwin
 ```
 
 `test/e2e/` has a minimal ACP client and a fake ssh, which runs the "remote" side on this machine
-under a separate `HOME`. See the header of `test/e2e/client.ts` for usage.
+under a separate `HOME`. See the header of `test/e2e/client.ts` for usage. `bun test/e2e/daemon.ts`
+runs the daemon end to end the same way, with a stub claude: a link that dies, the reconnect, the
+resume offset, and gone — no claude install and no login needed.

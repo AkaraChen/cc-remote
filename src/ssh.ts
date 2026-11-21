@@ -2,6 +2,7 @@ import type { SpawnedProcess, SpawnOptions } from "@anthropic-ai/claude-agent-sd
 import { spawn, spawnSync } from "node:child_process";
 import { closeSync, openSync } from "node:fs";
 import { hostname, userInfo } from "node:os";
+import { channel } from "./channel";
 import { WINDOWS } from "./platform";
 import { proxy } from "./proxy";
 import { localTranscript } from "./sessions";
@@ -69,6 +70,36 @@ export function runRemote(host: string, args: string[], cwd: string): Promise<nu
   return new Promise((done) => child.on("exit", (code) => done(code ?? 1)));
 }
 
+/** CC_REMOTE_DAEMON=off keeps every session on a direct ssh, even where the daemon is installed. */
+export const daemonEnabled = () => (Bun.env.CC_REMOTE_DAEMON ?? "auto").toLowerCase() !== "off";
+
+/** A failed probe is worth retrying, but not on every session: a minute between them is enough. */
+const PROBE_DELAY = 60_000;
+const probes = new Map<string, { at: number; version?: string; ms: number }>();
+
+/**
+ * Asks the host whether it runs the daemon ('cc-remoted version') and how long the round trip takes.
+ * Cached per host: a version for as long as we run, a failure for a minute, so a host without the
+ * daemon costs one probe a minute and sees nothing else change.
+ */
+export function probeDaemon(host: string, fresh = false): { version?: string; ms: number } {
+  const known = probes.get(host);
+  if (!fresh && known && (known.version || Date.now() - known.at < PROBE_DELAY)) return known;
+  const [ssh, ...flags] = rsh();
+  const started = performance.now();
+  const probe = spawnSync(ssh!, [...flags, "-T", host, REMOTE_PATH + " cc-remoted version"], {
+    encoding: "utf8",
+    timeout: 4000,
+    stdio: ["ignore", "pipe", "ignore"],
+    windowsHide: true,
+  });
+  const out = probe.status === 0 ? (probe.stdout ?? "").trim() : "";
+  const version = /^cc-remote \S+ daemon \d+$/.test(out) ? out : undefined;
+  const result = { at: Date.now(), version, ms: Math.round(performance.now() - started) };
+  probes.set(host, result);
+  return result;
+}
+
 const argument = (args: string[], name: string) => {
   const i = args.indexOf(name);
   return i >= 0 ? args[i + 1] : undefined;
@@ -94,6 +125,28 @@ export function spawner(host: string, cwd: string, env: Record<string, string>) 
     const resume = argument(options.args, "--resume");
     const transcript = resume ? localTranscript(resume, cwd) : undefined;
     const upload = transcript && resume ? [...base, uploadCommand(resume, cwd)] : undefined;
+    // With the daemon installed on the host, the ssh process is only a wire: claude belongs to the
+    // daemon, so a dropped link is reconnected and the bytes resume where they stopped. Without it,
+    // everything below is exactly what it was.
+    if (daemonEnabled() && probeDaemon(host).version) {
+      if (upload) {
+        // The daemon starts claude itself, so a transcript the host lacks goes up first, as on Windows.
+        const fd = openSync(transcript!, "r");
+        spawnSync(upload[0]!, upload.slice(1), { stdio: [fd, "ignore", "inherit"], windowsHide: true });
+        closeSync(fd);
+      }
+      const held = channel({
+        ssh: [ssh!, ...flags],
+        host,
+        remote: REMOTE_PATH + " cc-remoted attach --stdio",
+        steal: Boolean(Bun.env.CC_REMOTE_STEAL),
+        signal: options.signal,
+        // claude runs in the host folder; the daemon makes it and starts claude there.
+        open: () => ({ spawn: { argv: ["claude", ...options.args], cwd: hostDir(cwd), env: { ...added, ...env } } }),
+      });
+      return proxy(held, { cwd, hostDir: hostDir(cwd), mode: argument(options.args, "--permission-mode") ?? "default" });
+    }
+
     let command = main;
     if (transcript && upload) {
       if (WINDOWS) {

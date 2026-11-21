@@ -1,8 +1,7 @@
 import type { SpawnedProcess } from "@anthropic-ai/claude-agent-sdk";
-import type { ChildProcess } from "node:child_process";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { createInterface } from "node:readline";
-import { PassThrough, type Readable } from "node:stream";
+import { PassThrough, type Readable, type Writable } from "node:stream";
 import { EDITS, LOCAL, PREFIX, strip } from "./names";
 import { SHELL } from "./platform";
 import { projectKey, projectsDir } from "./sessions";
@@ -15,6 +14,22 @@ export type Session = {
   hostDir: string;
   /** claude's permission mode, followed through the SDK's requests. */
   mode: string;
+};
+
+/**
+ * What the proxy needs of the process claude appears to run in: the pipes the protocol rides on, and
+ * the events that say it is over. An ssh process fits it, and so does a session held by the daemon.
+ */
+export type SpawnLike = {
+  stdin: Writable | null;
+  stdout: Readable | null;
+  killed?: boolean;
+  exitCode?: number | null;
+  signalCode?: NodeJS.Signals | null;
+  kill(signal?: NodeJS.Signals): boolean;
+  on(event: "exit" | "error", listener: (...args: any[]) => void): unknown;
+  once(event: "exit" | "error", listener: (...args: any[]) => void): unknown;
+  off(event: "exit" | "error", listener: (...args: any[]) => void): unknown;
 };
 
 const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -139,8 +154,8 @@ function lines(input: Readable, onLine: (line: string) => void, onEnd: () => voi
   createInterface({ input, crlfDelay: Infinity }).on("line", onLine).on("close", onEnd);
 }
 
-/** Wraps the ssh process so the SDK reads and writes through the rewriter. */
-export function proxy(child: ChildProcess, s: Session): SpawnedProcess {
+/** Wraps the process claude runs in so the SDK reads and writes through the rewriter. */
+export function proxy(child: SpawnLike, s: Session): SpawnedProcess {
   const { outbound, inbound } = rewriter(s);
   const stdin = new PassThrough();
   const stdout = new PassThrough();
