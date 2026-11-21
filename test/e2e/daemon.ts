@@ -8,7 +8,7 @@
 //   bun test/e2e/daemon.ts
 
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ENDED, GONE, channel } from "../../src/channel";
@@ -27,6 +27,69 @@ const check = (what: string, pass: boolean, detail = "") => {
 };
 
 const sleep = (ms: number) => new Promise((done) => setTimeout(done, ms));
+
+// Every daemon this run starts, plus every home it used, so none of them can outlive it. A daemon
+// left behind holds its output open, and a runner reading that pipe never sees the end of the test.
+const started: { proc: Bun.Subprocess; home: string }[] = [];
+const used = new Set<string>();
+const pidOf = (home: string) => {
+  try {
+    return Number(readFileSync(join(home, ".cc-remote/run/daemon.pid"), "utf8").trim()) || 0;
+  } catch {
+    return 0;
+  }
+};
+const alive = (pid: number) => {
+  if (!pid) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+};
+/** The daemon pids this run is responsible for: the ones it spawned and the ones a door autostarted. */
+const daemonPids = () => [...new Set([...started.map((s) => s.proc.pid), ...[...used].map(pidOf)])].filter(Boolean);
+/** Last-resort sweep for the paths where nothing can be awaited any more. */
+const sweep = () => {
+  for (const pid of daemonPids()) {
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch {}
+  }
+};
+process.on("exit", sweep);
+for (const signal of ["SIGINT", "SIGTERM"] as const) {
+  process.on(signal, () => {
+    sweep();
+    process.exit(130);
+  });
+}
+/** Stops what this run started and waits for it, rather than leaving it to the exit handler. */
+async function stopDaemons() {
+  const pids = daemonPids();
+  for (const { proc } of started) {
+    try {
+      proc.kill("SIGTERM");
+    } catch {}
+  }
+  for (const pid of pids) {
+    try {
+      process.kill(pid, "SIGTERM");
+    } catch {}
+  }
+  const end = Date.now() + 4000;
+  while (Date.now() < end && pids.some(alive)) await sleep(50);
+  for (const pid of pids) {
+    if (!alive(pid)) continue;
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch {}
+  }
+  await Promise.all(started.map(({ proc }) => Promise.race([proc.exited, sleep(2000)])));
+  await sleep(100);
+  return pids;
+}
 
 async function until(what: () => boolean, ms: number) {
   const end = Date.now() + ms;
@@ -75,6 +138,7 @@ const onHost = (home: string, extra: Record<string, string> = {}) => ({
 const home = (name: string) => {
   const dir = join(root, name);
   mkdirSync(dir, { recursive: true });
+  used.add(dir);
   return dir;
 };
 
@@ -85,7 +149,13 @@ const onDaemon = (home: string) => ({ ...process.env, HOME: home });
 async function daemon(home: string, args: string[] = []) {
   // A first connection through fakessh leaves the host set up: cc-remoted and claude on its PATH.
   execFileSync(ssh, ["fakehost", "true"], { env: onHost(home) });
-  const proc = Bun.spawn(["bun", main, "daemon", "serve", ...args], { env: onDaemon(home), stdout: "ignore", stderr: "inherit" });
+  // The daemon's output goes to a file, never to this process's own pipes: a daemon that outlives
+  // the test then cannot hold the runner's pipe open, and its log is still there when a check fails.
+  const log = join(root, "daemon-" + started.length + ".log");
+  const file = process.platform === "win32" ? "ignore" : openSync(log, "a");
+  const proc = Bun.spawn(["bun", main, "daemon", "serve", ...args], { env: onDaemon(home), stdout: file, stderr: file });
+  if (typeof file === "number") closeSync(file);
+  started.push({ proc, home });
   await until(() => existsSync(join(home, ".cc-remote/run/daemon.sock")), 10_000);
   return proc;
 }
@@ -269,6 +339,15 @@ function door(home: string) {
   const afterCode = await after.closed;
   check("with nothing left to send the same instance answers gone", /"gone":true/.test(after.text()) && afterCode === GONE, "exit " + afterCode);
   daemon3.kill();
+}
+
+// 3. Nothing this run started is still running: the daemon owns claude, so its own exit has to be
+//    something the test checks rather than something a runner notices thirty minutes later.
+{
+  const before = daemonPids();
+  await stopDaemons();
+  const survived = before.filter(alive);
+  check("every daemon this run started is gone", survived.length === 0, survived.length ? "still alive: " + survived.join(", ") : before.length + " daemons stopped");
 }
 
 console.log(failures ? "\n" + failures + " check(s) failed" : "\nall checks passed");
