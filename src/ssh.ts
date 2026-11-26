@@ -2,6 +2,7 @@ import type { SpawnedProcess, SpawnOptions } from "@anthropic-ai/claude-agent-sd
 import { spawn, spawnSync } from "node:child_process";
 import { closeSync, openSync } from "node:fs";
 import { hostname, userInfo } from "node:os";
+import { channel } from "./channel";
 import { WINDOWS } from "./platform";
 import { proxy } from "./proxy";
 import { localTranscript } from "./sessions";
@@ -74,11 +75,44 @@ const argument = (args: string[], name: string) => {
   return i >= 0 ? args[i + 1] : undefined;
 };
 
+export const daemonEnabled = () => Bun.env.CC_REMOTE_DAEMON !== "off";
+
+const probeCache = new Map<string, { result: { version?: string; ms: number }; until: number }>();
+
+/** Asynchronously probes whether `cc-remoted` is installed on the host (caches success, 60s on failure). */
+export async function probeDaemon(host: string, fresh = false): Promise<{ version?: string; ms: number }> {
+  const key = `${host}\0${Bun.env.CC_REMOTE_SSH ?? ""}`;
+  const hit = !fresh ? probeCache.get(key) : undefined;
+  if (hit && Date.now() < hit.until) return hit.result;
+
+  const start = Date.now();
+  let result: { version?: string; ms: number };
+  try {
+    const proc = Bun.spawn([...rsh(), "-T", host, `${REMOTE_PATH} cc-remoted version`], {
+      stdout: "pipe",
+      stderr: "ignore",
+      stdin: "ignore",
+    });
+    const timer = setTimeout(() => { try { proc.kill(); } catch {} }, 4000);
+    try {
+      const [code, out] = await Promise.all([proc.exited, new Response(proc.stdout).text()]);
+      const version = code === 0 ? out.trim() : "";
+      result = version ? { version, ms: Date.now() - start } : { ms: Date.now() - start };
+    } finally {
+      clearTimeout(timer);
+    }
+  } catch {
+    result = { ms: Date.now() - start };
+  }
+  probeCache.set(key, { result, until: result.version ? Infinity : Date.now() + 60_000 });
+  return result;
+}
+
 /**
  * The SDK normally spawns claude locally and talks to it over stdin/stdout. We hand it ssh
  * instead; the protocol, tool calls included, rides over the same two pipes.
  */
-export function spawner(host: string, cwd: string, env: Record<string, string>) {
+export function spawner(host: string, cwd: string, env: Record<string, string>, useDaemon = false) {
   return (options: SpawnOptions): SpawnedProcess => {
     // ssh forwards no environment, so pass along what the SDK and ACP added for claude.
     const added = Object.fromEntries(
@@ -88,12 +122,24 @@ export function spawner(host: string, cwd: string, env: Record<string, string>) 
     );
     const [ssh, ...flags] = rsh();
     const base = [ssh!, ...flags, "-T", host];
-    const main = [...base, remoteCommand(options.args, { ...added, ...env }, cwd)];
 
     // A session the host has never seen (a fork, or one a local claude wrote) goes up first.
     const resume = argument(options.args, "--resume");
     const transcript = resume ? localTranscript(resume, cwd) : undefined;
     const upload = transcript && resume ? [...base, uploadCommand(resume, cwd)] : undefined;
+    const mergedEnv = { ...added, ...env };
+
+    if (useDaemon) {
+      const ch = channel({
+        ssh: base,
+        spawn: { argv: ["claude", ...options.args], cwd: hostDir(cwd), env: mergedEnv },
+        signal: options.signal,
+        upload: transcript && upload ? { cmd: upload, file: transcript } : undefined,
+      });
+      return proxy(ch, { cwd, hostDir: hostDir(cwd), mode: argument(options.args, "--permission-mode") ?? "default" });
+    }
+
+    const main = [...base, remoteCommand(options.args, mergedEnv, cwd)];
     let command = main;
     if (transcript && upload) {
       if (WINDOWS) {

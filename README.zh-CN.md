@@ -134,9 +134,10 @@ paseo plugin install github:AkaraChen/cc-remote:paseo-plugin
 ### 命令
 
 ```
-cc-remote [--host <host>]                  在 stdio 上提供 ACP（客户端运行的就是这个）
-cc-remote [--host <host>] doctor           检查 ssh 和远端 claude 的版本
-cc-remote [--host <host>] --cli <args...>  在服务器上运行 `claude <args...>`
+cc-remote [--host <host>]                        在 stdio 上提供 ACP（客户端运行的就是这个）
+cc-remote [--host <host>] doctor                 检查 ssh、远端 claude 版本和 daemon 状态
+cc-remote [--host <host>] --cli <args...>        在服务器上运行 `claude <args...>`
+cc-remote daemon <install|uninstall|status|kill|stop>   管理可选的服务端 daemon
 cc-remote --version | --help
 ```
 
@@ -164,6 +165,16 @@ cc-remote 会先把它复制到服务器。在服务器上，每个本地目录�
 `ServerAliveInterval=15` 和 `ServerAliveCountMax=3`，连接断了大约一分钟内就会报错，而不是一直卡住。
 如果 `CC_REMOTE_SSH` 里更早出现了同名的 `-o`，则以那个为准。Windows 的 OpenSSH 不能共享连接，
 所以在 Windows 上每个会话各开一个连接。
+
+**可选服务端 daemon（SSH 断线按字节续传）。** 默认情况下服务器不需要安装任何东西。如果希望会话在
+SSH 短暂断线后保活并按字节偏移自动续传，可以在服务器上安装 `cc-remote` 并运行
+`cc-remote daemon install`（会安装 `~/.local/bin/cc-remoted` 及 systemd user service 或后台进程）。
+检测到服务端已安装后，断线时 daemon 会保持 `claude` 运行并将输出写入 `bun:sqlite` spool
+（`~/.cc-remote/daemon.db`），重连时按偏移无缝回放。
+- 本地设置 `CC_REMOTE_DAEMON=off` 可强制关闭 daemon，完全退回直连 SSH。
+- 本地设置 `CC_REMOTE_STEAL=1` 可接管仍在其他连接上占用的会话。
+- daemon 只是传输加速器，`.jsonl` transcript 永远是唯一真相：如果 daemon 自身重启或退出，
+  其中的 `claude` 会跟着退出，直接用 `/resume` 从 transcript 恢复即可。
 
 **Windows。** shell 工具是 PowerShell 而不是 Bash，和 Windows 上的 Claude Code 一致。PATH 里有
 PowerShell 7（`pwsh`）时用它，否则用 Windows PowerShell 5.1。Grep 需要 PATH 里有
