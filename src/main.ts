@@ -6,15 +6,17 @@ import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
 import { dirname, join } from "node:path";
 import pkg from "../package.json";
+import { runDaemonCli } from "./daemon-cli";
 import { remote } from "./options";
 import { WINDOWS } from "./platform";
-import { quote, REMOTE_PATH, rsh, runRemote } from "./ssh";
+import { daemonEnabled, probeDaemon, quote, REMOTE_PATH, rsh, runRemote } from "./ssh";
 import { killAll } from "./tools";
 import { home } from "./tools/util";
 
 const USAGE = `Usage: cc-remote [--host <host>]
        cc-remote [--host <host>] --cli <claude arguments...>
        cc-remote [--host <host>] doctor
+       cc-remote daemon <install|uninstall|status|kill <id>|stop>
 
 Claude Code as an ACP agent, with the model on a remote host and the tools on this machine.
 Point an ACP client (Zed, paseo, ...) at \`cc-remote --host <host>\`.
@@ -23,10 +25,12 @@ Point an ACP client (Zed, paseo, ...) at \`cc-remote --host <host>\`.
                    (else $CC_REMOTE_HOST, else ~/.config/cc-remote/host)
   --cli <args...>  run claude on the host with these arguments, e.g. --cli auth login
   doctor           check the connection and the remote claude version
+  daemon <cmd>     manage the optional server-side reconnect daemon
   -v, --version    print the version
   -h, --help       print this help
 
-  CC_REMOTE_SSH="ssh -p 2222"   ssh command to use, like rsync's RSYNC_RSH`;
+  CC_REMOTE_SSH="ssh -p 2222"   ssh command to use, like rsync's RSYNC_RSH
+  CC_REMOTE_DAEMON=off          disable the optional server daemon`;
 
 /** The oldest remote claude cc-remote has been run against. */
 const MIN_CLAUDE = "2.1.248";
@@ -43,10 +47,18 @@ const older = (a: string, b: string) => {
 };
 
 function parse(argv: string[]) {
-  const args = { host: undefined as string | undefined, cli: undefined as string[] | undefined, doctor: false, version: false, help: false };
+  const args = {
+    host: undefined as string | undefined,
+    cli: undefined as string[] | undefined,
+    daemon: undefined as string[] | undefined,
+    doctor: false,
+    version: false,
+    help: false,
+  };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]!;
     if (a === "--cli") { args.cli = argv.slice(i + 1); break; }
+    if (a === "daemon") { args.daemon = argv.slice(i + 1); break; }
     if (a === "--host") args.host = argv[++i] ?? fail("--host needs a value");
     else if (a.startsWith("--host=")) args.host = a.slice(7);
     else if (a === "doctor") args.doctor = true;
@@ -71,6 +83,8 @@ async function doctor(target: string) {
   if ((await proc.exited) !== 0 || !out) fail(`could not run claude on ${target}`);
   console.log(`remote claude: ${out}`);
   if (older(out.split(" ")[0]!, MIN_CLAUDE)) fail(`remote claude is older than ${MIN_CLAUDE}. Run \`claude update\` on ${target}.`);
+  const d = daemonEnabled() ? await probeDaemon(target, true) : undefined;
+  console.log(`daemon: ${!daemonEnabled() ? "disabled" : d?.version ? `${d.version} (${d.ms}ms)` : `not installed (${d?.ms ?? 0}ms)`}`);
   console.log("ok");
 }
 
@@ -128,6 +142,8 @@ if (args.help) {
   console.log(USAGE);
 } else if (args.version) {
   console.log(`${pkg.version} (cc-remote, claude-agent-acp ${acpPkg.version})`);
+} else if (args.daemon) {
+  process.exit(await runDaemonCli(args.daemon));
 } else {
   const target = await host(args.host);
   process.on("exit", killAll);

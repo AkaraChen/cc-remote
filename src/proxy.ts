@@ -1,11 +1,23 @@
 import type { SpawnedProcess } from "@anthropic-ai/claude-agent-sdk";
-import type { ChildProcess } from "node:child_process";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { createInterface } from "node:readline";
-import { PassThrough, type Readable } from "node:stream";
+import { PassThrough, type Readable, type Writable } from "node:stream";
 import { EDITS, LOCAL, PREFIX, strip } from "./names";
 import { SHELL } from "./platform";
 import { projectKey, projectsDir } from "./sessions";
+
+/** Minimal process handle required by proxy(), satisfied by ChildProcess and channel(). */
+export type SpawnLike = {
+  stdin: Writable | null;
+  stdout: Readable | null;
+  readonly killed: boolean;
+  readonly exitCode: number | null;
+  readonly signalCode?: NodeJS.Signals | null;
+  kill(signal: NodeJS.Signals): boolean;
+  on(event: "exit" | "error", listener: (...args: any[]) => void): unknown;
+  once(event: "exit" | "error", listener: (...args: any[]) => void): unknown;
+  off(event: "exit" | "error", listener: (...args: any[]) => void): unknown;
+};
 
 /** What one claude process needs to have its messages read as if it ran in `cwd` on this machine. */
 export type Session = {
@@ -140,7 +152,7 @@ function lines(input: Readable, onLine: (line: string) => void, onEnd: () => voi
 }
 
 /** Wraps the ssh process so the SDK reads and writes through the rewriter. */
-export function proxy(child: ChildProcess, s: Session): SpawnedProcess {
+export function proxy(child: SpawnLike, s: Session): SpawnedProcess {
   const { outbound, inbound } = rewriter(s);
   const stdin = new PassThrough();
   const stdout = new PassThrough();

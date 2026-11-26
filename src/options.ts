@@ -4,7 +4,7 @@ import { localMcpServers } from "./mcp";
 import { LOCAL, PREFIX, READS, REMOVED, widenMatcher } from "./names";
 import { environment } from "./prompt";
 import { mirror } from "./sessions";
-import { spawner } from "./ssh";
+import { daemonEnabled, probeDaemon, spawner } from "./ssh";
 import { localTools } from "./tools";
 
 type SystemPrompt = Options["systemPrompt"];
@@ -38,11 +38,15 @@ export function remote(host: string) {
   return async (options: Options): Promise<Options> => {
     const cwd = options.cwd ?? process.cwd();
     // Extra directories are local paths; the host has none of them. They go in the prompt instead.
-    const [env, local] = await Promise.all([environment(cwd, options.additionalDirectories ?? []), localMcpServers(cwd)]);
+    const [env, local, probe] = await Promise.all([
+      environment(cwd, options.additionalDirectories ?? []),
+      localMcpServers(cwd),
+      daemonEnabled() ? probeDaemon(host) : undefined,
+    ]);
     return {
       ...options,
       pathToClaudeCodeExecutable: "claude",
-      spawnClaudeCodeProcess: spawner(host, cwd, { CLAUDE_CODE_DISABLE_CLAUDE_MDS: "1" }),
+      spawnClaudeCodeProcess: spawner(host, cwd, { CLAUDE_CODE_DISABLE_CLAUDE_MDS: "1" }, Boolean(probe?.version)),
       additionalDirectories: [],
       systemPrompt: withEnvironment(options.systemPrompt, env),
       // The client's servers win over the config's: it chose them for this session.

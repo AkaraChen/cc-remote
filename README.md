@@ -145,9 +145,10 @@ paseo plugin install github:AkaraChen/cc-remote:paseo-plugin
 ### Commands
 
 ```
-cc-remote [--host <host>]                  speak ACP on stdio (what your client runs)
-cc-remote [--host <host>] doctor           check ssh and the remote claude version
-cc-remote [--host <host>] --cli <args...>  run `claude <args...>` on the server
+cc-remote [--host <host>]                        speak ACP on stdio (what your client runs)
+cc-remote [--host <host>] doctor                 check ssh, remote claude, and daemon status
+cc-remote [--host <host>] --cli <args...>        run `claude <args...>` on the server
+cc-remote daemon <install|uninstall|status|kill|stop>   manage the optional server daemon
 cc-remote --version | --help
 ```
 
@@ -181,6 +182,18 @@ Every connection sends `ServerAliveInterval=15` and `ServerAliveCountMax=3`, so 
 in about a minute instead of hanging. If an `-o` with the same name comes earlier in
 `CC_REMOTE_SSH`, that one is used instead. Windows' OpenSSH can't share connections, so there each
 session opens its own.
+
+**Optional server daemon (reconnect across SSH drops).** By default nothing needs to run on the
+server. If you want in-flight sessions to survive brief SSH disconnects and resume by byte offset,
+install `cc-remote` on the server and run `cc-remote daemon install` there (creates
+`~/.local/bin/cc-remoted` and a systemd user service or detached daemon). When detected by
+`cc-remote`, sessions keep `claude` alive on disconnect and replay missed bytes from a local
+`bun:sqlite` spool (`~/.cc-remote/daemon.db`) on reconnect.
+- Set `CC_REMOTE_DAEMON=off` locally to bypass the daemon and use direct SSH.
+- Set `CC_REMOTE_STEAL=1` locally to take over a session that is still attached elsewhere.
+- The daemon is only a transport accelerator: the `.jsonl` transcript remains the source of truth.
+  If the daemon itself stops or restarts, running `claude` processes exit and you can reopen your
+  session with `/resume`.
 
 **Windows.** The shell tool is PowerShell instead of Bash, as in Claude Code on Windows. cc-remote
 uses PowerShell 7 (`pwsh`) when it's on PATH, otherwise Windows PowerShell 5.1. Grep needs
